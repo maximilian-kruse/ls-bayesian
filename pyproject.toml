@@ -79,7 +79,11 @@ select = [
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
+    "TID252",  # relative imports
 ]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -88,7 +92,7 @@ line-ending = "auto"
 
 
 [tool.pytest.ini_options]
-testpaths = ["test"]
+testpaths = ["tests"]
 addopts = [
   "-v",
   "--import-mode=importlib",
@@ -97,4 +101,5 @@ markers = [
   "unit: unit tests",
   "integration: integration tests",
   "slow: tests with long runtime",
+  "parallel: tests requiring several MPI processes, run via `mpirun -n 2 python -m pytest -m parallel -p no:cacheprovider`",
 ]
