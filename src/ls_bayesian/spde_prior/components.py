@@ -13,11 +13,17 @@ Classes:
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from numbers import Real
-from typing import Annotated
+from typing import Annotated, override
 
 import numpy as np
 from beartype.vale import Is
 from petsc4py import PETSc
+
+_KSP_REASON_NAMES = {
+    value: name
+    for name, value in vars(PETSc.KSP.ConvergedReason).items()
+    if isinstance(value, int) and not name.startswith("_")
+}
 
 
 # ==================================================================================================
@@ -98,7 +104,8 @@ class PETScComponentComposition(PETScComponent):
     are compositions of several simpler, matrix-like components. This class provides the
     functionality to combine an arbitrary number of PETSc components into a new, composite
     component. The idea is very simple: Given a list of components $[M_1, M_2, ..., M_n]$, which
-    can be applied to a PETSc vector, the composition will apply them in the given sequence.
+    can be applied to a PETSc vector, the composition will apply them in the given sequence. As a
+    matrix, the composition therefore represents the product $M_n \cdots M_2 M_1$.
 
     Methods:
         apply: Apply composition of components to input, store result in output vector.
@@ -134,11 +141,12 @@ class PETScComponentComposition(PETScComponent):
                     f"component {i + 1} input dimension {components[i + 1].shape[1]}."
                 )
 
-        self._temp_buffers = []
-        for i in range(self._num_components - 1):
-            self._temp_buffers.append(components[i].create_output_vector())
+        self._temp_buffers: list[PETSc.Vec] = [
+            component.create_output_vector() for component in components[:-1]
+        ]
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def apply(self, input_vector: PETSc.Vec, output_vector: PETSc.Vec) -> None:
         """Apply the composition of components to input, store result in output vector.
 
@@ -155,6 +163,7 @@ class PETScComponentComposition(PETScComponent):
         self._components[-1].apply(current_input, output_vector)
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_input_vector(self) -> PETSc.Vec:
         """Create PETSc vector that could be multiplied with composition from the right.
 
@@ -164,6 +173,7 @@ class PETScComponentComposition(PETScComponent):
         return self._components[0].create_input_vector()
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_output_vector(self) -> PETSc.Vec:
         """Create PETSc vector that could be multiplied with composition from the left.
 
@@ -174,6 +184,7 @@ class PETScComponentComposition(PETScComponent):
 
     # ----------------------------------------------------------------------------------------------
     @property
+    @override
     def shape(self) -> tuple[int, int]:
         """Get the shape of the component, i.e. number of rows and columns of the composition.
 
@@ -187,11 +198,16 @@ class PETScComponentComposition(PETScComponent):
 class InterfaceComponent:
     """Wrapper for PETSc component for numpy-based interface.
 
-    The prior [`PETScComponents`][ls_prior.components.PETScComponent] handle matrix representations
-    and vectors in standard PETSc format. To allow for a more Pythonic interface, this class wraps
-    a given PETSc component and provides methods to apply numpy arrays to the component, returning
-    numpy arrays. These arrays are also copied to avoid modification of the original underlying data
-    structures, which are handled as references only.
+    The prior [`PETScComponents`][ls_bayesian.spde_prior.components.PETScComponent] handle matrix
+    representations and vectors in standard PETSc format. To allow for a more Pythonic interface,
+    this class wraps a given PETSc component and provides methods to apply numpy arrays to the
+    component, returning numpy arrays. These arrays are also copied to avoid modification of the
+    original underlying data structures, which are handled as references only.
+
+    In parallel, input and output arrays hold the entries owned by the respective process, in the
+    layout of the PETSc vectors. Alternatively, the input can be a complete vector that is
+    identical on all processes. The entries owned by each process are then selected by the
+    `input_indices` given on initialization.
 
     Methods:
         apply: Apply input array to component, return result as numpy array.
@@ -204,15 +220,31 @@ class InterfaceComponent:
     def __init__(
         self,
         component: PETScComponent,
+        input_indices: np.ndarray[tuple[int], np.dtype[np.integer]] | None = None,
     ) -> None:
         """Initialize interface component.
 
         Args:
             component (PETScComponent): PETSc component to wrap.
+            input_indices (np.ndarray[tuple[int], np.dtype[np.integer]] | None, optional): Indices
+                of the entries of a complete input vector that are owned by this process, in the
+                local order of the input PETSc vector. If given, `apply` expects complete input
+                vectors. If `None`, `apply` expects the owned entries. Defaults to `None`.
+
+        Raises:
+            ValueError: If the number of input indices does not match the number of owned
+                input entries.
         """
         self._component = component
         self._input_buffer = component.create_input_vector()
         self._output_buffer = component.create_output_vector()
+        num_owned_inputs = self._input_buffer.getLocalSize()
+        if input_indices is not None and input_indices.shape != (num_owned_inputs,):
+            raise ValueError(
+                f"Input indices shape {input_indices.shape} does not match the number of owned "
+                f"input entries {num_owned_inputs}."
+            )
+        self._input_indices = input_indices
 
     # ----------------------------------------------------------------------------------------------
     def apply(
@@ -221,24 +253,30 @@ class InterfaceComponent:
         """Apply input array to component, also return result as numpy array.
 
         Args:
-            input_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Input vector
-                to apply to component.
+            input_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Input vector to apply to
+                the component. Either the complete vector of shape `(num_cols,)`, if input
+                indices are given, or the entries owned by this process.
 
         Raises:
             ValueError: If input vector does not have correct shape.
 
         Returns:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Result of the application to the
-                underlying component. Will be copied from internal buffer to avoid modification of
-                internal state.
+                underlying component, entries owned by this process. Will be copied from internal
+                buffer to avoid modification of internal state.
         """
-        if not input_vector.shape == (self.shape[1],):
+        if self._input_indices is None:
+            expected_shape = (self._input_buffer.getLocalSize(),)
+        else:
+            expected_shape = (self.shape[1],)
+        if not input_vector.shape == expected_shape:
             raise ValueError(
                 f"Input vector shape {input_vector.shape} does not match expected shape "
-                f"({self.shape[1]},)."
+                f"{expected_shape}."
             )
+        if self._input_indices is not None:
+            input_vector = input_vector[self._input_indices]
         self._input_buffer.setArray(input_vector)
-        self._input_buffer.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
         self._component.apply(self._input_buffer, self._output_buffer)
         output_vector = self._output_buffer.getArray()
 
@@ -284,6 +322,7 @@ class Matrix(PETScComponent):
         self._petsc_matrix = petsc_matrix
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def apply(self, input_vector: PETSc.Vec, output_vector: PETSc.Vec) -> None:
         """Perform matrix-vector multiplication with input, store result in output vector.
 
@@ -294,6 +333,7 @@ class Matrix(PETScComponent):
         self._petsc_matrix.mult(input_vector, output_vector)
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_input_vector(self) -> PETSc.Vec:
         """Create PETSc vector that could be multiplied with matrix from the right.
 
@@ -303,6 +343,7 @@ class Matrix(PETScComponent):
         return self._petsc_matrix.createVecRight()
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_output_vector(self) -> PETSc.Vec:
         """Create PETSc vector that could be multiplied with matrix from the left.
 
@@ -313,6 +354,7 @@ class Matrix(PETScComponent):
 
     # ----------------------------------------------------------------------------------------------
     @property
+    @override
     def shape(self) -> tuple[int, int]:
         """Get the shape of the component, i.e. number of rows and columns of the matrix.
 
@@ -328,15 +370,17 @@ class InverseMatrixSolverSettings:
     r"""Settings for the inverse matrix representation via Krylov subspace solver.
 
     All combinations of solvers and preconditioners provided in PETSc are supported. It is the
-    user's responsibility to choose a suitable combination.
+    user's responsibility to choose a suitable combination. The field constraints are validated on
+    initialization.
 
     Attributes:
         solver_type: Type of the PETSc [KSP](https://petsc.org/release/petsc4py/reference/petsc4py.PETSc.KSP.Type.html#petsc4py.PETSc.KSP.Type)
             solver.
         preconditioner_type: Type of the PETSc [preconditioner](https://petsc.org/main/petsc4py/reference/petsc4py.PETSc.PC.Type.html).
-        relative_tolerance: Relative tolerance for the solver.
-        absolute_tolerance: Absolute tolerance for the solver.
-        max_num_iterations: Maximum number of iterations to perform.
+        relative_tolerance: Relative tolerance for the solver. If `None`, the PETSc default is used.
+        absolute_tolerance: Absolute tolerance for the solver. If `None`, the PETSc default is used.
+        max_num_iterations: Maximum number of iterations to perform. If `None`, the PETSc default
+            is used.
     """
 
     solver_type: str
@@ -346,11 +390,14 @@ class InverseMatrixSolverSettings:
     max_num_iterations: Annotated[int, Is[lambda x: x > 0]] | None = None
 
 
+# ==================================================================================================
 class InverseMatrixSolver(PETScComponent):
     """Inverse matrix representation via Krylov subspace solver.
 
     This class resembles the inverse of a given PETSc matrix, through an iterative solver. This
     allows for matrix-free representation and efficient application of the inverse to PETSc vectors.
+    The application is only as accurate as the solver tolerances. A solve that does not converge
+    raises an error, instead of returning an inaccurate result.
 
     Methods:
         apply: Apply inverse matrix to input, store result in output vector.
@@ -387,16 +434,28 @@ class InverseMatrixSolver(PETScComponent):
         )
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def apply(self, input_vector: PETSc.Vec, output_vector: PETSc.Vec) -> None:
         """Apply inverse matrix to input, store result in output vector.
 
         Args:
             input_vector (PETSc.Vec): Vector to apply inverse to.
             output_vector (PETSc.Vec): Vector to store result in.
+
+        Raises:
+            RuntimeError: If the Krylov solver does not converge.
         """
         self._solver.solve(input_vector, output_vector)
+        converged_reason = self._solver.getConvergedReason()
+        if converged_reason < 0:
+            raise RuntimeError(
+                f"Krylov solver did not converge: {_KSP_REASON_NAMES.get(converged_reason)} "
+                f"(reason {converged_reason}) after {self._solver.getIterationNumber()} "
+                "iterations. Consider adjusting the solver tolerances or iteration limit."
+            )
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_input_vector(self) -> PETSc.Vec:
         """Create PETSc vector that could be multiplied with inverse matrix from the right.
 
@@ -406,8 +465,9 @@ class InverseMatrixSolver(PETScComponent):
         return self._petsc_matrix.createVecLeft()
 
     # ----------------------------------------------------------------------------------------------
+    @override
     def create_output_vector(self) -> PETSc.Vec:
-        """Create PETSc vector that could be multiplied with matrix from the left.
+        """Create PETSc vector that could be multiplied with inverse matrix from the left.
 
         Returns:
             PETSc.Vec: PETSc vector of correct size.
@@ -416,6 +476,7 @@ class InverseMatrixSolver(PETScComponent):
 
     # ----------------------------------------------------------------------------------------------
     @property
+    @override
     def shape(self) -> tuple[int, int]:
         """Get the shape of the component, i.e. number of rows and columns of the inverse matrix.
 

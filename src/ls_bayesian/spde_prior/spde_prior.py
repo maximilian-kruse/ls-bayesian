@@ -1,27 +1,32 @@
-"""Prior distribution interface.
+"""Gaussian prior measure based on an SPDE representation.
 
-Class:
-    Prior: Prior distribution class.
+Classes:
+    SPDEPrior: SPDE-based prior distribution class.
 """
 
 import numpy as np
 
-from . import components, fem
+from ls_bayesian.spde_prior import components, fem
 
 
 # ==================================================================================================
-class Prior:
-    r"""Prior distribution class.
+class SPDEPrior:
+    r"""SPDE-based prior distribution class.
 
     This class implements functionality of a Gaussian prior measure that is typically required in
-    the context of Bayesian inference. In the spirit of separation of concerns, the prior component
-    is rather stupid. It simply utilizes objects for the (representation of) a covariance operator
-    $\mathcal{C}$, its factorization $\widehat{\mathcal{C}}$, and a precision operator
-    $\mathcal{C}^{-1}$. These components have to adhere to the interface prescribed by the
-    [`InterfaceComponent`][ls_prior.components.InterfaceComponent] class. The necessary objects can
-    be manually assembled and be handed to the `Prior` class for maximum flexibility.
-    On the other hand, the [`builder`][ls_prior.builder] module provides a convenient alternative
-    for the setup of a preconfigured prior object.
+    the context of Bayesian inference. Its covariance structure arises as the solution operator of
+    an SPDE. In the spirit of separation of concerns, the prior component is rather stupid. It
+    simply utilizes objects for the (representation of) a covariance operator $\mathcal{C}$, its
+    factorization $\widehat{\mathcal{C}}$, and a precision operator $\mathcal{C}^{-1}$. These
+    components have to adhere to the interface prescribed by the
+    [`InterfaceComponent`][ls_bayesian.spde_prior.components.InterfaceComponent] class. The
+    necessary objects can be manually assembled and be handed to the `SPDEPrior` class for maximum
+    flexibility. On the other hand, the [`builder`][ls_bayesian.spde_prior.builder] module provides
+    a convenient alternative for the setup of a preconfigured prior object.
+
+    All public vectors are given on the mesh vertices. Internally, they are converted to the DoFs
+    of the underlying function space via a
+    [`FEMConverter`][ls_bayesian.spde_prior.fem.FEMConverter].
 
     Methods:
         evaluate_cost: Evaluate the cost/negative log-probability for a given parameter vector.
@@ -29,11 +34,17 @@ class Prior:
             a given parameter vector.
         evaluate_hessian_vector_product: Evaluate the Hessian-vector product of the cost functional
             in the given direction.
-        sample: Generate a sample from the prior distribution.
+        generate_sample: Generate a sample from the prior distribution.
+        apply_covariance_operator: Apply the covariance operator $\mathcal{C}$.
+        apply_covariance_factorization: Apply the covariance factorization $\widehat{\mathcal{C}}$.
+        apply_precision_operator: Apply the precision operator $\mathcal{C}^{-1}$.
+
+    Attributes:
+        random_vector_size: Size of the i.i.d. normal vector required for sampling.
     """
 
     # ----------------------------------------------------------------------------------------------
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         mean_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
         precision_operator: components.InterfaceComponent,
@@ -42,11 +53,11 @@ class Prior:
         fem_converter: fem.FEMConverter,
         seed: int,
     ) -> None:
-        r"""Initialize Prior distribution object.
+        r"""Initialize SPDEPrior distribution object.
 
         Args:
             mean_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Mean vector $\overline{m}$
-                of the prior measure.
+                of the prior measure, given on mesh vertices.
             precision_operator (components.InterfaceComponent): Representation of the precision
                 operator $\mathcal{C}^{-1}$.
             covariance_operator (components.InterfaceComponent): Representation of the covariance
@@ -58,13 +69,14 @@ class Prior:
             seed (int): Random seed for the internal random number generator.
 
         Raises:
+            ValueError: Checks that the mean vector is given on the mesh vertices.
             ValueError: Checks that precision operator has the correct shape.
             ValueError: Checks that covariance operator has the correct shape.
             ValueError: Checks that covariance factor has the correct shape.
         """
         self._fem_converter = fem_converter
         self._mean_vector = self._fem_converter.convert_vertex_values_to_dofs(mean_vector)
-        mean_vector_dim = self._mean_vector.shape[0]
+        mean_vector_dim = self._fem_converter.global_dof_space_dim
         if not precision_operator.shape == (mean_vector_dim, mean_vector_dim):
             raise ValueError(
                 f"Precision operator shape {precision_operator.shape} does not match "
@@ -101,17 +113,17 @@ class Prior:
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter candidate for
-                which to evaluate  the cost/negative log probability, given on mesh vertices.
+                which to evaluate the cost/negative log probability, given on mesh vertices.
 
         Returns:
-            float: cost/negative log probability
+            float: Cost/negative log probability, up to an additive constant.
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
-        self._check_input_dimension(parameter_vector_dof)
         difference_vector = parameter_vector_dof - self._mean_vector
-        cost = 0.5 * np.inner(difference_vector, self._precision_operator.apply(difference_vector))
+        local_cost = np.inner(difference_vector, self._precision_operator.apply(difference_vector))
+        cost = 0.5 * self._fem_converter.comm.allreduce(local_cost)
         assert cost >= 0, f"Cost needs to be non-negative, but is {cost}."
-        return cost
+        return float(cost)
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_gradient(
@@ -130,10 +142,8 @@ class Prior:
                 log-probability, given on mesh vertices.
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
-        self._check_input_dimension(parameter_vector_dof)
         difference_vector = parameter_vector_dof - self._mean_vector
         gradient_dof = self._precision_operator.apply(difference_vector)
-        self._check_output_dimension(gradient_dof)
         gradient = self._fem_converter.convert_dofs_to_vertex_values(gradient_dof)
         return gradient
 
@@ -164,14 +174,15 @@ class Prior:
         Computes sample in two-step procedure:
 
         1. Generate i.i.d. normal vector $\xi$ matching input dimension of $\widehat{\mathcal{C}}$.
-        2. Multiply with covariance factorization $\widehat{\mathcal{C}}$ and add mean
+        2. Multiply with covariance factorization $\widehat{\mathcal{C}}$ and add mean.
+
+        Samples are reproducible for a given seed, but successive calls draw different samples.
 
         Returns:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Sample vector, given on mesh vertices.
         """
         random_vector = self._prng.normal(loc=0.0, scale=1.0, size=self.random_vector_size)
         sample_vector_dof = self._covariance_factorization.apply(random_vector)
-        self._check_output_dimension(sample_vector_dof)
         sample_vector_dof += self._mean_vector
         sample_vector = self._fem_converter.convert_dofs_to_vertex_values(sample_vector_dof)
         return sample_vector
@@ -192,9 +203,7 @@ class Prior:
                 operator, given on mesh vertices.
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
-        self._check_input_dimension(parameter_vector_dof)
         covariance_applied_dof = self._covariance_operator.apply(parameter_vector_dof)
-        self._check_output_dimension(covariance_applied_dof)
         covariance_applied = self._fem_converter.convert_dofs_to_vertex_values(
             covariance_applied_dof
         )
@@ -205,11 +214,11 @@ class Prior:
         self,
         random_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-        """Apply the covariance factorization to a given parameter vector.
+        r"""Apply the covariance factorization $\widehat{\mathcal{C}}$ to a given random vector.
 
         Args:
             random_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Random vector for
-                which to apply the covariance factorization.
+                which to apply the covariance factorization, shape `(random_vector_size,)`.
 
         Returns:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Result of applying the covariance
@@ -225,7 +234,6 @@ class Prior:
                 f"{self.random_vector_size}."
             )
         covariance_factorization_applied_dof = self._covariance_factorization.apply(random_vector)
-        self._check_output_dimension(covariance_factorization_applied_dof)
         covariance_factorization_applied = self._fem_converter.convert_dofs_to_vertex_values(
             covariance_factorization_applied_dof
         )
@@ -247,25 +255,6 @@ class Prior:
                 operator, given on mesh vertices.
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
-        self._check_input_dimension(parameter_vector_dof)
         precision_applied_dof = self._precision_operator.apply(parameter_vector_dof)
-        self._check_output_dimension(precision_applied_dof)
         precision_applied = self._fem_converter.convert_dofs_to_vertex_values(precision_applied_dof)
         return precision_applied
-
-    # ----------------------------------------------------------------------------------------------
-    def _check_input_dimension(self, vector: np.ndarray) -> None:
-        """Checks dimension of input vectors, applied in all interface methods."""
-        if not vector.shape == self._mean_vector.shape:
-            raise ValueError(
-                f"Vector shape {vector.shape} does not match "
-                f"the mean vector shape {self._mean_vector.shape}."
-            )
-
-    # ----------------------------------------------------------------------------------------------
-    def _check_output_dimension(self, vector: np.ndarray) -> None:
-        """Checks dimension of result vectors, applied in all interface methods."""
-        assert vector.shape == self._mean_vector.shape, (
-            f"Sample vector shape {vector.shape} does not match "
-            f"mean vector shape {self._mean_vector.shape}."
-        )

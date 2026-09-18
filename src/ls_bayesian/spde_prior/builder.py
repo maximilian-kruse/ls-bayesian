@@ -15,7 +15,17 @@ from beartype.vale import Is
 from dolfinx.fem import petsc
 from petsc4py import PETSc
 
-from . import components, fem, prior
+from ls_bayesian.spde_prior import components, fem, spde_prior
+
+# Relative residual reduction of the inner Krylov solves. The precision, covariance and sampling
+# operators are applied through these solves, so their accuracy bounds the consistency of cost,
+# gradient and Hessian-vector products of the prior. The value keeps this error far below typical
+# optimizer and finite difference tolerances, while being attainable in double precision for the
+# well-conditioned, preconditioned mass and SPDE systems.
+DEFAULT_SOLVER_RELATIVE_TOLERANCE = 1e-12
+# Safeguard against stagnating solves. The preconditioned systems typically converge in far fewer
+# iterations, and exceeding the limit raises an error instead of returning an inaccurate result.
+DEFAULT_SOLVER_MAX_ITERATIONS = 1000
 
 
 # ==================================================================================================
@@ -23,40 +33,40 @@ from . import components, fem, prior
 class BilaplacianPriorSettings:
     r"""Settings for the bilaplacian prior builder.
 
-    This dataclass collects all configuration options required to set up a biplaplacian prior
-    using the [`BilaplacianPriorBuilder`][ls_prior.builder.BilaplacianPriorBuilder] class.
+    This dataclass collects all configuration options required to set up a bilaplacian prior using
+    the [`BilaplacianPriorBuilder`][ls_bayesian.spde_prior.builder.BilaplacianPriorBuilder] class.
     The builder distributes these settings to the respective components that are assembled within
-    the builder.
+    the builder. The field constraints are validated on initialization.
 
     Attributes:
         mesh (dlx.mesh.Mesh): Dolfinx mesh on which the prior is defined.
         mean_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Mean vector of the prior,
             vertex-based representation.
-        kappa (Real): Parameter $\kappa$ in the SPDE formulation of the prior
-        tau (Real): Parameter $\tau$ in the SPDE formulation of the prior
+        kappa (Real): Parameter $\kappa > 0$ in the SPDE formulation of the prior.
+        tau (Real): Parameter $\tau > 0$ in the SPDE formulation of the prior.
         robin_const (Real | None): Robin boundary condition constant. If `None`, homogeneous
             Neumann boundary conditions are applied. Defaults to `None`.
         seed (int): Random seed for the internal random number generator. Defaults to `0`.
         fe_data (tuple[str, int]): Finite element type and degree used for the function space
             setup. Defaults to `("CG", 1)`.
-        cg_relative_tolerance (Real | None): Relative tolerance for the CG solver used in the
-            application of the precision operator. If `None`, the default PETSc tolerance is used.
-            Defaults to `None`.
+        cg_relative_tolerance (Real): Relative tolerance for the CG solver used in the
+            application of the precision operator. Defaults to
+            `DEFAULT_SOLVER_RELATIVE_TOLERANCE`.
         cg_absolute_tolerance (Real | None): Absolute tolerance for the CG solver used in the
-            application of the precision operator. If `None`, the default PETSc tolerance is used.
-            Defaults to `None`.
-        cg_max_iterations (int | None): Maximum number of iterations for the CG solver used in
-            the application of the precision operator. If `None`, the default PETSc value is used
-            Defaults to `None`.
-        amg_relative_tolerance (Real | None): Relative tolerance for the AMG solver used in the
-            application of the covariance operator and its factorization. If `None`, the default
-            PETSc tolerance is used. Defaults to `None`.
-        amg_absolute_tolerance (Real | None): Absolute tolerance for the AMG solver used in the
-            application of the covariance operator and its factorization. If `None`, the default
-            PETSc tolerance is used. Defaults to `None`.
-        amg_max_iterations (int | None): Maximum number of iterations for the AMG solver used in
-            the application of the covariance operator and its factorization. If `None`, the
-            default PETSc value is used. Defaults to `None`.
+            application of the precision operator. If `None`, the PETSc default of $10^{-50}$
+            is used, i.e. effectively only the relative criterion applies. Defaults to `None`.
+        cg_max_iterations (int): Maximum number of iterations for the CG solver used in the
+            application of the precision operator. Defaults to `DEFAULT_SOLVER_MAX_ITERATIONS`.
+        amg_relative_tolerance (Real): Relative tolerance for the AMG-preconditioned solver used
+            in the application of the covariance operator and its factorization. Defaults to
+            `DEFAULT_SOLVER_RELATIVE_TOLERANCE`.
+        amg_absolute_tolerance (Real | None): Absolute tolerance for the AMG-preconditioned
+            solver used in the application of the covariance operator and its factorization. If
+            `None`, the PETSc default of $10^{-50}$ is used, i.e. effectively only the relative
+            criterion applies. Defaults to `None`.
+        amg_max_iterations (int): Maximum number of iterations for the AMG-preconditioned solver
+            used in the application of the covariance operator and its factorization. Defaults
+            to `DEFAULT_SOLVER_MAX_ITERATIONS`.
     """
 
     mesh: dlx.mesh.Mesh
@@ -64,22 +74,25 @@ class BilaplacianPriorSettings:
     kappa: Annotated[Real, Is[lambda x: x > 0]]
     tau: Annotated[Real, Is[lambda x: x > 0]]
     robin_const: Real | None = None
-    seed: Real = 0
+    seed: int = 0
     fe_data: tuple[str, Annotated[int, Is[lambda x: x > 0]]] = ("CG", 1)
-    cg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
+    cg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_SOLVER_RELATIVE_TOLERANCE
     cg_absolute_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
-    cg_max_iterations: Annotated[int, Is[lambda x: x > 0]] | None = None
-    amg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
+    cg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_SOLVER_MAX_ITERATIONS
+    amg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_SOLVER_RELATIVE_TOLERANCE
     amg_absolute_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
-    amg_max_iterations: Annotated[int, Is[lambda x: x > 0]] | None = None
+    amg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_SOLVER_MAX_ITERATIONS
 
 
 # ==================================================================================================
 class BilaplacianPriorBuilder:
     r"""Builder for a Bilaplacian prior.
 
-    Specific builder class for a bilaplacian prior, i.e. the distribution that arises from solving
-    the SPDE $\tau(\kappa^2 - \Delta)^2 m = W$.
+    Specific builder class for a bilaplacian prior, i.e. the distribution of the solution of the
+    SPDE $\tau(\kappa^2 - \Delta) m = \mathcal{W}$ with white noise $\mathcal{W}$. Its covariance
+    operator $\mathcal{C} = (\tau(\kappa^2 - \Delta))^{-2}$ is the inverse of a squared elliptic
+    operator, discretized as $\mathcal{C} = A^{-1} M A^{-1}$ with mass matrix $M$ and SPDE matrix
+    $A$.
 
     Methods:
         build: Build the Bilaplacian prior.
@@ -91,6 +104,7 @@ class BilaplacianPriorBuilder:
 
         Args:
             settings (BilaplacianPriorSettings): Settings for the Bilaplacian prior.
+
         """
         self._mesh = settings.mesh
         self._mean_vector = settings.mean_vector
@@ -116,16 +130,16 @@ class BilaplacianPriorBuilder:
         )
 
     # ----------------------------------------------------------------------------------------------
-    def build(self) -> prior.Prior:
+    def build(self) -> spde_prior.SPDEPrior:
         """Build the Bilaplacian prior.
 
         Internally, this method assembles all dolfinx structures, composes a hierarchy of
-        [`PETScComponents`][ls_prior.components.PETScComponent], wraps them in
-        [`InterfaceComponents`][ls_prior.components.InterfaceComponent] and hands them to the
-        [`Prior`][ls_prior.prior.Prior] class.
+        [`PETScComponents`][ls_bayesian.spde_prior.components.PETScComponent], wraps them in
+        [`InterfaceComponents`][ls_bayesian.spde_prior.components.InterfaceComponent] and hands them
+        to the [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] class.
 
         Returns:
-            prior.Prior: The constructed Bilaplacian prior.
+            spde_prior.SPDEPrior: The constructed Bilaplacian prior.
         """
         mass_matrix, spde_matrix, block_diagonal_matrix, dof_map_matrix, converter = (
             self._build_fem_structures()
@@ -134,9 +148,11 @@ class BilaplacianPriorBuilder:
             mass_matrix, spde_matrix, block_diagonal_matrix, dof_map_matrix
         )
         precision_operator_interface, covariance_operator_interface, sampling_factor_interface = (
-            self._build_interfaces(precision_operator, covariance_operator, sampling_factor)
+            self._build_interfaces(
+                precision_operator, covariance_operator, sampling_factor, converter
+            )
         )
-        bilaplace_prior = prior.Prior(
+        bilaplacian_prior = spde_prior.SPDEPrior(
             self._mean_vector,
             precision_operator_interface,
             covariance_operator_interface,
@@ -144,7 +160,7 @@ class BilaplacianPriorBuilder:
             converter,
             seed=self._seed,
         )
-        return bilaplace_prior
+        return bilaplacian_prior
 
     # ----------------------------------------------------------------------------------------------
     def _build_fem_structures(
@@ -153,9 +169,10 @@ class BilaplacianPriorBuilder:
         r"""Assemble FEM data structures, i.e. FEM Matrices and `FEMConverter` object.
 
         Returns:
-            tuple[PETSc.Mat, PETSc.Mat, PETSc.Mat, fem.FEMConverter]:
-                mass matrix $M$, SPDE matrix $A$, block-diagonal matrix $\widehat{M}_w$,
-                DoF map matrix $L$, [`FEMConverter`][ls_prior.fem.FEMConverter] object.
+            tuple[PETSc.Mat, PETSc.Mat, PETSc.Mat, PETSc.Mat, fem.FEMConverter]:
+                mass matrix $M$, SPDE matrix $A$, block-diagonal matrix $\widehat{M}_e$,
+                transposed DoF map matrix $L^T$,
+                [`FEMConverter`][ls_bayesian.spde_prior.fem.FEMConverter] object.
         """
         function_space = dlx.fem.functionspace(self._mesh, self._fe_data)
         mass_matrix_form, spde_matrix_form = fem.generate_forms(
@@ -194,7 +211,7 @@ class BilaplacianPriorBuilder:
             mass_matrix (PETSc.Mat): Mass matrix $M$.
             spde_matrix (PETSc.Mat): SPDE matrix $A$.
             block_diagonal_matrix (PETSc.Mat): Block-diagonal matrix $\widehat{M}_e$.
-            dof_map_matrix (PETSc.Mat): DoF map matrix $L$.
+            dof_map_matrix (PETSc.Mat): Transposed DoF map matrix $L^T$.
 
         Returns:
             tuple[components.PETScComponent,
@@ -235,6 +252,7 @@ class BilaplacianPriorBuilder:
         precision_operator: components.PETScComponent,
         covariance_operator: components.PETScComponent,
         sampling_factor: components.PETScComponent,
+        converter: fem.FEMConverter,
     ) -> tuple[
         components.InterfaceComponent, components.InterfaceComponent, components.InterfaceComponent
     ]:
@@ -242,8 +260,10 @@ class BilaplacianPriorBuilder:
 
         Args:
             precision_operator (components.PETScComponent): Precision operator $\mathcal{C}^{-1}$.
-            covariance_operator (components.PETScComponent): SPDE matrix $A$.
+            covariance_operator (components.PETScComponent): Covariance operator $\mathcal{C}$.
             sampling_factor (components.PETScComponent): Sampling factor $\widehat{\mathcal{C}}$.
+            converter (fem.FEMConverter): Converter providing the process-independent order of the
+                sampling factor input, i.e. the cell-local DoFs.
 
         Returns:
             tuple[components.InterfaceComponent,
@@ -252,7 +272,9 @@ class BilaplacianPriorBuilder:
         """
         precision_operator_interface = components.InterfaceComponent(precision_operator)
         covariance_operator_interface = components.InterfaceComponent(covariance_operator)
-        sampling_factor_interface = components.InterfaceComponent(sampling_factor)
+        sampling_factor_interface = components.InterfaceComponent(
+            sampling_factor, input_indices=converter.cell_block_input_indices
+        )
         return (
             precision_operator_interface,
             covariance_operator_interface,
