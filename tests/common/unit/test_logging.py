@@ -13,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 
 # ==================================================================================================
-def _is_open(path: Path) -> bool:
+def _check_if_file_handle_is_open(path: Path) -> bool:
     """Check whether the current process holds an open file descriptor for the given file."""
     file_descriptor_directory = Path("/proc/self/fd")
     for file_descriptor in file_descriptor_directory.iterdir():
@@ -25,7 +25,9 @@ def _is_open(path: Path) -> bool:
     return False
 
 
-def _file_logger(logfile_path: Path, *, write_mode: Literal["w", "a"] = "w") -> BaseLogger:
+def _create_logger_with_file(
+    logfile_path: Path, *, write_mode: Literal["w", "a"] = "w"
+) -> BaseLogger:
     return BaseLogger(
         LoggerSettings(print_to_console=False, logfile_path=logfile_path, write_mode=write_mode),
         prefix="test",
@@ -35,57 +37,61 @@ def _file_logger(logfile_path: Path, *, write_mode: Literal["w", "a"] = "w") -> 
 # ==================================================================================================
 def test_logger_writes_prefixed_messages(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
-    logger = _file_logger(logfile_path)
+    logger = _create_logger_with_file(logfile_path)
 
     logger.info("info message")
     logger.warning("warning message")
+    logger.debug("debug message")
+    logger.error("error message")
     logger.close()
 
     assert logfile_path.read_text().splitlines() == [
         "[TEST] info message",
         "[TEST][WARNING] warning message",
+        "[TEST][DEBUG] debug message",
+        "[TEST][ERROR] error message",
     ]
 
 
 # --------------------------------------------------------------------------------------------------
 def test_close_releases_logfile(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
-    logger = _file_logger(logfile_path)
-    assert _is_open(logfile_path)
+    logger = _create_logger_with_file(logfile_path)
+    assert _check_if_file_handle_is_open(logfile_path)
 
     logger.close()
 
     assert logger.closed
-    assert not _is_open(logfile_path)
+    assert not _check_if_file_handle_is_open(logfile_path)
 
 
 # --------------------------------------------------------------------------------------------------
 def test_context_manager_closes_logger(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
 
-    with _file_logger(logfile_path) as logger:
+    with _create_logger_with_file(logfile_path) as logger:
         logger.info("message")
 
     assert logger.closed
-    assert not _is_open(logfile_path)
+    assert not _check_if_file_handle_is_open(logfile_path)
     assert logfile_path.read_text() == "[TEST] message\n"
 
 
 # --------------------------------------------------------------------------------------------------
 def test_garbage_collection_releases_logfile(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
-    logger = _file_logger(logfile_path)
-    assert _is_open(logfile_path)
+    logger = _create_logger_with_file(logfile_path)
+    assert _check_if_file_handle_is_open(logfile_path)
 
     del logger
     gc.collect()
 
-    assert not _is_open(logfile_path)
+    assert not _check_if_file_handle_is_open(logfile_path)
 
 
 # --------------------------------------------------------------------------------------------------
 def test_close_is_idempotent(tmp_path: Path) -> None:
-    logger = _file_logger(tmp_path / "test.log")
+    logger = _create_logger_with_file(tmp_path / "test.log")
 
     logger.close()
     logger.close()
@@ -96,7 +102,7 @@ def test_close_is_idempotent(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("method_name", ["info", "debug", "warning", "error", "exception"])
 def test_logging_to_closed_logger_raises(tmp_path: Path, method_name: str) -> None:
-    logger = _file_logger(tmp_path / "test.log")
+    logger = _create_logger_with_file(tmp_path / "test.log")
     logger.close()
 
     with pytest.raises(ValueError, match="closed logger"):
@@ -119,12 +125,16 @@ def test_console_logger_prints_prefixed_messages(capsys: pytest.CaptureFixture[s
 
     logger.info("info message")
     logger.warning("warning message")
+    logger.debug("debug message")
+    logger.error("error message")
     logger.close()
 
     captured = capsys.readouterr()
     assert captured.out.splitlines() == [
         "[TEST] info message",
         "[TEST][WARNING] warning message",
+        "[TEST][DEBUG] debug message",
+        "[TEST][ERROR] error message",
     ]
 
 
@@ -152,7 +162,7 @@ def test_write_mode_w_overwrites_existing_logfile(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
     logfile_path.write_text("stale\n")
 
-    with _file_logger(logfile_path, write_mode="w") as logger:
+    with _create_logger_with_file(logfile_path, write_mode="w") as logger:
         logger.info("new message")
 
     assert logfile_path.read_text() == "[TEST] new message\n"
@@ -163,31 +173,16 @@ def test_write_mode_a_appends_to_existing_logfile(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
     logfile_path.write_text("stale\n")
 
-    with _file_logger(logfile_path, write_mode="a") as logger:
+    with _create_logger_with_file(logfile_path, write_mode="a") as logger:
         logger.info("new message")
 
     assert logfile_path.read_text() == "stale\n[TEST] new message\n"
 
 
 # --------------------------------------------------------------------------------------------------
-def test_debug_and_error_messages_are_formatted_and_emitted(tmp_path: Path) -> None:
-    logfile_path = tmp_path / "test.log"
-    logger = _file_logger(logfile_path)
-
-    logger.debug("debug message")
-    logger.error("error message")
-    logger.close()
-
-    assert logfile_path.read_text().splitlines() == [
-        "[TEST][DEBUG] debug message",
-        "[TEST][ERROR] error message",
-    ]
-
-
-# --------------------------------------------------------------------------------------------------
 def test_exception_includes_traceback(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
-    logger = _file_logger(logfile_path)
+    logger = _create_logger_with_file(logfile_path)
 
     try:
         raise ValueError("boom")
@@ -204,7 +199,7 @@ def test_exception_includes_traceback(tmp_path: Path) -> None:
 def test_messages_do_not_propagate_to_root_logger(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    logger = _file_logger(tmp_path / "test.log")
+    logger = _create_logger_with_file(tmp_path / "test.log")
 
     logger.info("info message")
     logger.warning("warning message")
@@ -218,8 +213,8 @@ def test_messages_do_not_propagate_to_root_logger(
 def test_two_loggers_with_same_prefix_do_not_share_handlers(tmp_path: Path) -> None:
     first_logfile_path = tmp_path / "first.log"
     second_logfile_path = tmp_path / "second.log"
-    first_logger = _file_logger(first_logfile_path)
-    second_logger = _file_logger(second_logfile_path)
+    first_logger = _create_logger_with_file(first_logfile_path)
+    second_logger = _create_logger_with_file(second_logfile_path)
 
     first_logger.info("first message")
     second_logger.info("second message")
@@ -237,7 +232,7 @@ def test_two_loggers_with_same_prefix_do_not_share_handlers(tmp_path: Path) -> N
 def test_missing_parent_directories_are_created(tmp_path: Path) -> None:
     logfile_path = tmp_path / "a" / "b" / "c.log"
 
-    with _file_logger(logfile_path) as logger:
+    with _create_logger_with_file(logfile_path) as logger:
         logger.info("message")
 
     assert logfile_path.read_text() == "[TEST] message\n"
@@ -247,7 +242,10 @@ def test_missing_parent_directories_are_created(tmp_path: Path) -> None:
 def test_context_manager_propagates_exceptions(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
 
-    with pytest.raises(RuntimeError, match="boom"), _file_logger(logfile_path) as logger:
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        _create_logger_with_file(logfile_path) as logger,
+    ):
         raise RuntimeError("boom")
 
     assert logger.closed
