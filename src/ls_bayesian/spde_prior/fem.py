@@ -12,6 +12,9 @@ Classes:
 
 Functions:
     generate_forms: Generate variational forms for the mass matrix and SPDE system matrix.
+    order_vertices_and_cells: Get vertex coordinates and cell connectivity of a mesh, ordered to
+        match the vertex vectors handled elsewhere in this module. This corresponds to the ordering
+        of, e.g. meshes loaded via pyvista.
 """
 
 from numbers import Real
@@ -23,6 +26,7 @@ import numpy as np
 import scifem
 import ufl
 from beartype.vale import Is
+from dolfinx.fem import petsc
 from mpi4py import MPI
 from petsc4py import PETSc
 
@@ -34,7 +38,7 @@ def generate_forms(
     function_space: dlx.fem.FunctionSpace,
     kappa: Annotated[Real, Is[lambda x: x > 0]],
     tau: Annotated[Real, Is[lambda x: x > 0]],
-    robin_const: Real | None = None,
+    robin_const: Annotated[Real, Is[lambda x: x >= 0]] | None = None,
 ) -> tuple[ufl.Form, ufl.Form]:
     r"""Construct dolfinx forms for the mass matrix and SPDE system matrix.
 
@@ -57,14 +61,15 @@ def generate_forms(
     $\beta$ is the optional `robin_const` parameter that enforces Robin boundary conditions
     instead of homogeneous Neumann boundary conditions. As the boundary term is not scaled with
     $\tau$, the boundary condition of the operator $\tau(\kappa^2 - \Delta)$ reads
-    $\tau \nabla \phi \cdot n + \beta \phi = 0$.
+    $\tau \nabla \phi \cdot n + \beta \phi = 0$. For $\kappa, \tau > 0$ and $\beta \geq 0$, the
+    SPDE matrix is symmetric positive definite, a negative $\beta$ can render it indefinite.
 
     Args:
         function_space (dlx.fem.FunctionSpace): dolfinx function space to construct forms over.
-        kappa (Real): Parameter $\kappa$ of the prior field.
-        tau (Real): Parameter $\tau$ of the prior field.
-        robin_const (Real | None, optional): Parameter $\beta$ of the prior field enforcing
-            Robin boundary conditions. Defaults to None.
+        kappa (Real): Parameter $\kappa > 0$ of the prior field.
+        tau (Real): Parameter $\tau > 0$ of the prior field.
+        robin_const (Real | None, optional): Parameter $\beta \geq 0$ of the prior field
+            enforcing Robin boundary conditions. Defaults to None.
 
     Returns:
         tuple[ufl.Form, ufl.Form]: dolfinx forms for the mass matrix and SPDE system matrix
@@ -81,9 +86,144 @@ def generate_forms(
     return mass_matrix_form, spde_matrix_form
 
 
+# --------------------------------------------------------------------------------------------------
+def get_ordered_vertices_and_cells(
+    mesh: dlx.mesh.Mesh,
+) -> tuple[
+    np.ndarray[tuple[int, int], np.dtype[np.float64]],
+    np.ndarray[tuple[int, int], np.dtype[np.int64]],
+]:
+    """Get vertex coordinates and cell connectivity of a mesh, in the input node order.
+
+    Vertex vectors handled elsewhere in this module (see the module docstring, and
+    [`FEMConverter`][ls_bayesian.spde_prior.fem.FEMConverter]) are ordered by input node index, not
+    by dolfinx's own internal geometry node order: dolfinx is free to renumber geometry nodes
+    internally, e.g. for cache locality, even on a single process, so `mesh.geometry.x` and
+    `mesh.geometry.dofmaps[0]` correspond, in general, not to the input node order.
+    Plotting or exporting a vertex vector directly against `mesh.geometry.x` and
+    `mesh.geometry.dofmaps[0]` therefore assigns it to the wrong points. This function returns the
+    same geometry, consistently reindexed by input node order, so that a vertex vector can be
+    combined with it directly.
+
+    Args:
+        mesh (dlx.mesh.Mesh): dolfinx mesh with affine (degree-1) geometry.
+
+    Raises:
+        ValueError: If the mesh geometry is not affine, as vertices are then not the only
+            geometry nodes.
+
+    Returns:
+        tuple[np.ndarray[tuple[int, int], np.dtype[np.float64]],
+              np.ndarray[tuple[int, int], np.dtype[np.int64]]]: Vertex coordinates, shape
+            `(vertex_space_dim, geometric_dim)`, and cell connectivity indexing into the vertex
+            coordinates, shape `(num_cells, num_cell_vertices)`. Both are replicated identically
+            on every process, and cells are ordered by their input index.
+    """
+    if mesh.geometry.cmaps[0].degree != 1:
+        raise ValueError(
+            "input_ordered_mesh_geometry requires an affine mesh geometry, but the geometry has "
+            f"degree {mesh.geometry.cmaps[0].degree}."
+        )
+    communicator = mesh.comm
+
+    # Get Vertices
+    vertex_index_map = mesh.topology.index_map(0)
+    num_vertices_global = vertex_index_map.size_global
+    num_owned_vertices = vertex_index_map.size_local
+    mesh.topology.create_connectivity(0, mesh.topology.dim)
+    owned_vertex_geometry_nodes = dlx.mesh.entities_to_geometry(
+        mesh, 0, np.arange(num_owned_vertices, dtype=np.int32)
+    ).reshape(-1)
+    owned_vertex_input_indices = mesh.geometry.input_global_indices[owned_vertex_geometry_nodes]
+    owned_vertex_coordinates = mesh.geometry.x[owned_vertex_geometry_nodes]
+
+    geometric_dim = owned_vertex_coordinates.shape[1]
+    vertex_coordinates = np.column_stack(
+        [
+            _gather_by_index(
+                communicator,
+                owned_vertex_input_indices,
+                owned_vertex_coordinates[:, component],
+                num_vertices_global,
+            )
+            for component in range(geometric_dim)
+        ]
+    )
+
+    # Get connectivity
+    cell_index_map = mesh.topology.index_map(mesh.topology.dim)
+    num_owned_cells = cell_index_map.size_local
+    num_cells_global = cell_index_map.size_global
+    owned_cell_input_indices = mesh.topology.original_cell_index[:num_owned_cells]
+    # `mesh.geometry.dofmaps[0]` indexes local geometry rows, which `input_global_indices` maps to
+    # input node indices; these coincide with positions in `vertex_coordinates` by construction.
+    owned_cell_connectivity = mesh.geometry.input_global_indices[
+        mesh.geometry.dofmaps[0][:num_owned_cells]
+    ].astype(np.float64)
+    num_cell_vertices = owned_cell_connectivity.shape[1]
+    cell_connectivity = np.column_stack(
+        [
+            _gather_by_index(
+                communicator,
+                owned_cell_input_indices,
+                owned_cell_connectivity[:, local_vertex],
+                num_cells_global,
+            )
+            for local_vertex in range(num_cell_vertices)
+        ]
+    ).astype(np.int64)
+
+    return vertex_coordinates, cell_connectivity
+
+
+# --------------------------------------------------------------------------------------------------
+def _check_factorizable_form(form: ufl.Form) -> None:
+    """Check that a form only consists of what the cell-wise factorization assembly supports.
+
+    The assembly calls the compiled kernel of the first cell integral of the form directly, and
+    passes neither coefficient nor constant values to it. Other integrals would be silently
+    dropped, and coefficients or constants would be read from null pointers.
+    """
+    unsupported_integrals = [
+        (integral.integral_type(), integral.subdomain_id())
+        for integral in form.integrals()
+        if (integral.integral_type(), integral.subdomain_id()) != ("cell", "everywhere")
+    ]
+    if unsupported_integrals:
+        raise ValueError(
+            "Matrix factorization assembly only supports cell integrals over the whole domain, "
+            f"but the form contains the integrals (type, subdomain) {unsupported_integrals}."
+        )
+    if form.coefficients() or form.constants():
+        raise ValueError(
+            "Matrix factorization assembly does not support forms with coefficients or constants, "
+            f"but the form contains {len(form.coefficients())} coefficients and "
+            f"{len(form.constants())} constants."
+        )
+
+
+# --------------------------------------------------------------------------------------------------
+def _gather_by_index(
+    communicator: MPI.Comm,
+    indices: np.ndarray[tuple[int], np.dtype[np.integer]],
+    values: np.ndarray[tuple[int], np.dtype[np.float64]],
+    size: int,
+) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+    """Assemble a complete vector on all processes from disjoint, indexed parts of each process."""
+    counts = communicator.allgather(values.size)
+    assert sum(counts) == size, f"Gathered {sum(counts)} entries, but expected {size}."
+    all_indices = np.empty(size, dtype=np.int64)
+    all_values = np.empty(size, dtype=np.float64)
+    communicator.Allgatherv(indices.astype(np.int64), (all_indices, counts))
+    communicator.Allgatherv(np.ascontiguousarray(values, dtype=np.float64), (all_values, counts))
+    complete_vector = np.empty(size, dtype=np.float64)
+    complete_vector[all_indices] = all_values
+    return complete_vector
+
+
 # ==================================================================================================
 class FEMConverter:
-    """Converter between vertex based data and DoF representation on a dolfinx function space.
+    r"""Converter between vertex based data and DoF representation on a dolfinx function space.
 
     This class connects the representation of arrays in dolfinx on a specified function space
     with a vertex-based viewpoint. Think of it as the adapter required for the prior to
@@ -104,9 +244,23 @@ class FEMConverter:
     vectors indexed by cell-local DoFs, the input space of cell-wise block matrices: entry
     `c * num_cell_dofs + k` belongs to local DoF `k` of the cell with input index `c`.
 
+    Denote the vertex-to-DoF interpolation `convert_vertex_values_to_dofs` performs by the linear
+    map $I$. For a P1 function space, $I$ is a permutation of the vertex values, and its inverse
+    coincides with its transpose $I^T$, which in turn coincides with `convert_dofs_to_vertex_values`
+    (denoted $R$): $R = I^{-1} = I^T$. For a function space of higher degree, $I$ is an injective,
+    non-square map into the larger DoF space (e.g. it also determines edge-midpoint DoFs from
+    vertex values), so $R \neq I^T$ in general; $R$ still recovers a DoF-space *field's own value*
+    at the vertices (used, e.g., to express a sample or the covariance/precision operator as a
+    field-to-field map on vertex space), but it is not the adjoint of $I$. Differentiating a
+    functional of $I(m)$ with respect to $m$ requires that adjoint, $\nabla_m = I^T \nabla_u$,
+    which `pull_back_gradient` provides. Use `pull_back_gradient`, not
+    `convert_dofs_to_vertex_values`, wherever a DoF-space gradient or Hessian-vector product needs
+    to be expressed in vertex space.
+
     Methods:
         convert_vertex_values_to_dofs: Convert vertex based data to DoF representation
         convert_dofs_to_vertex_values: Convert DoF based data to vertex representation
+        pull_back_gradient: Pull back a gradient (covector) from DoF space to vertex space.
 
     Attributes:
         vertex_space_dim (int): Number of mesh vertices, length of vertex vectors.
@@ -150,30 +304,40 @@ class FEMConverter:
         cell_index_map = mesh.topology.index_map(mesh.topology.dim)
         num_cell_dofs = function_space.dofmap.dof_layout.num_dofs
 
+        self.comm = mesh.comm
+        self.global_vertex_space_dim = vertex_index_map.size_global
+        self.local_dof_space_dim = dof_index_map.size_local
+        self.global_dof_space_dim = dof_index_map.size_global
         self._dof_function = dlx.fem.Function(function_space)
         self._vertex_function = dlx.fem.Function(vertex_space)
-        self.comm = mesh.comm
-        self.vertex_space_dim = vertex_index_map.size_global
-        self.dof_space_dim = dof_index_map.size_local
-        self.global_dof_space_dim = dof_index_map.size_global
 
         self._num_owned_vertices = vertex_index_map.size_local
-        self._vertex_to_dof_map = scifem.vertex_to_dofmap(vertex_space)
+        self._p1_vertex_to_dof_map = scifem.vertex_to_dofmap(vertex_space)
         local_vertices = np.arange(
             vertex_index_map.size_local + vertex_index_map.num_ghosts, dtype=np.int32
         )
         mesh.topology.create_connectivity(0, mesh.topology.dim)
         vertex_geometry_nodes = dlx.mesh.entities_to_geometry(mesh, 0, local_vertices).reshape(-1)
-        self._vertex_input_indices = mesh.geometry.input_global_indices[vertex_geometry_nodes]
+        self._global_vertex_indices = mesh.geometry.input_global_indices[vertex_geometry_nodes]
 
-        owned_cell_input_indices = mesh.topology.original_cell_index[: cell_index_map.size_local]
-        self.cell_block_input_indices = (
-            owned_cell_input_indices[:, None] * num_cell_dofs + np.arange(num_cell_dofs)
+        owned_cell_indices = mesh.topology.original_cell_index[: cell_index_map.size_local]
+        self.cell_block_indices = (
+            owned_cell_indices[:, None] * num_cell_dofs + np.arange(num_cell_dofs)
         ).reshape(-1)
+
+        # Adjoint $I^T$ of the vertex-to-DoF interpolation $I$, for `pull_back_gradient`. Built as
+        # an explicit transpose of dolfinx's own interpolation matrix (verified to reproduce
+        # `convert_vertex_values_to_dofs` exactly), so that applying it is an ordinary assembled
+        # matrix-vector product, with no manual handling of ghost contributions required.
+        vertex_to_dof_matrix = petsc.interpolation_matrix(vertex_space, function_space)
+        vertex_to_dof_matrix.assemble()
+        self._dof_to_vertex_adjoint_matrix = vertex_to_dof_matrix.transpose()
+        self._adjoint_input_vector = self._dof_to_vertex_adjoint_matrix.createVecRight()
+        self._adjoint_output_vector = self._dof_to_vertex_adjoint_matrix.createVecLeft()
 
     # ----------------------------------------------------------------------------------------------
     def convert_vertex_values_to_dofs(
-        self, vertex_values: np.ndarray[tuple[int], np.dtype[np.float64]]
+        self, global_vertex_values: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         """Convert vertex based data to DoF representation.
 
@@ -189,28 +353,28 @@ class FEMConverter:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Input data interpolated to the owned
                 function space DoFs, shape `(dof_space_dim,)`, copied.
         """
-        if not vertex_values.shape == (self.vertex_space_dim,):
+        if not global_vertex_values.shape == (self.global_vertex_space_dim,):
             raise ValueError(
-                f"Expected vertex_values to have shape {(self.vertex_space_dim,)}, "
-                f"but got {vertex_values.shape}"
+                f"Expected vertex_values to have shape {(self.global_vertex_space_dim,)}, "
+                f"but got {global_vertex_values.shape}"
             )
         # All local vertices, including ghosts, are set from the complete vector, so no ghost
         # update is required before interpolation.
-        self._vertex_function.x.array[self._vertex_to_dof_map] = vertex_values[
-            self._vertex_input_indices
+        self._vertex_function.x.array[self._p1_vertex_to_dof_map] = global_vertex_values[
+            self._global_vertex_indices
         ]
         self._dof_function.interpolate(self._vertex_function)
-        return self._dof_function.x.array[: self.dof_space_dim].copy()
+        return self._dof_function.x.array[: self.local_dof_space_dim].copy()
 
     # ----------------------------------------------------------------------------------------------
     def convert_dofs_to_vertex_values(
-        self, dof_values: np.ndarray[tuple[int], np.dtype[np.float64]]
+        self, local_dof_values: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         """Convert DoF based data to vertex representation.
 
         Args:
             dof_values (np.ndarray[tuple[int], np.dtype[np.float64]]): Array of data defined on
-                the owned DoFs of the underlying function space, shape `(dof_space_dim,)`.
+                the owned DoFs of the underlying function space, shape `(local_dof_space_dim,)`.
 
         Raises:
             ValueError: Checks that the shape of the input vector matches the number of owned DoFs
@@ -218,45 +382,73 @@ class FEMConverter:
 
         Returns:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Array of data interpolated to the vertices
-                of the underlying mesh, in input node order, shape `(vertex_space_dim,)`. The array
-                is identical on all processes.
+                of the underlying mesh, in input node order, shape `(global_vertex_space_dim,)`.
+                The array is identical on all processes.
         """
-        if not dof_values.shape == (self.dof_space_dim,):
+        if not local_dof_values.shape == (self.local_dof_space_dim,):
             raise ValueError(
-                f"Expected dof_values to have shape {(self.dof_space_dim,)}, "
-                f"but got {dof_values.shape}"
+                f"Expected dof_values to have shape {(self.local_dof_space_dim,)}, "
+                f"but got {local_dof_values.shape}"
             )
-        self._dof_function.x.array[: self.dof_space_dim] = dof_values
+        self._dof_function.x.array[: self.local_dof_space_dim] = local_dof_values
         self._dof_function.x.scatter_forward()
         self._vertex_function.interpolate(self._dof_function)
         owned_vertex_values = self._vertex_function.x.array[
-            self._vertex_to_dof_map[: self._num_owned_vertices]
+            self._p1_vertex_to_dof_map[: self._num_owned_vertices]
         ]
         return _gather_by_index(
             self.comm,
-            self._vertex_input_indices[: self._num_owned_vertices],
+            self._global_vertex_indices[: self._num_owned_vertices],
             owned_vertex_values,
-            self.vertex_space_dim,
+            self.global_vertex_space_dim,
         )
 
+    # ----------------------------------------------------------------------------------------------
+    def pull_back_gradient(
+        self, local_dof_space_gradient: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Pull back a gradient (covector) from DoF space to vertex space.
 
-# ==================================================================================================
-def _gather_by_index(
-    communicator: MPI.Comm,
-    indices: np.ndarray[tuple[int], np.dtype[np.integer]],
-    values: np.ndarray[tuple[int], np.dtype[np.float64]],
-    size: int,
-) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-    """Assemble a complete vector on all processes from disjoint, indexed parts of each process."""
-    counts = communicator.allgather(values.size)
-    assert sum(counts) == size, f"Gathered {sum(counts)} entries, but expected {size}."
-    all_indices = np.empty(size, dtype=np.int64)
-    all_values = np.empty(size, dtype=np.float64)
-    communicator.Allgatherv(indices.astype(np.int64), (all_indices, counts))
-    communicator.Allgatherv(np.ascontiguousarray(values, dtype=np.float64), (all_values, counts))
-    complete_vector = np.empty(size, dtype=np.float64)
-    complete_vector[all_indices] = all_values
-    return complete_vector
+        For a scalar functional $J$ of a DoF-space quantity $u = I(m)$, with $I$ the vertex-to-DoF
+        interpolation of `convert_vertex_values_to_dofs`, the chain rule gives
+        $\nabla_m J = I^T \nabla_u J$. This method applies the adjoint $I^T$, and is the correct
+        way to express a DoF-space gradient or Hessian-vector product in vertex space.
+
+        `convert_dofs_to_vertex_values` is not equivalent: it recovers a DoF-space field's own
+        value at the vertices, coinciding with $I^T$ only when $I$ is square (a P1 function
+        space), see the class docstring.
+
+        Args:
+            dof_space_gradient (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient defined on
+                the owned DoFs of the underlying function space, shape `(dof_space_dim,)`.
+
+        Raises:
+            ValueError: Checks that the shape of the input vector matches the number of owned DoFs
+                on the underlying function space.
+
+        Returns:
+            np.ndarray[tuple[int], np.dtype[np.float64]]: Pulled-back gradient on the vertices of
+                the underlying mesh, in input node order, shape `(vertex_space_dim,)`. The array is
+                identical on all processes.
+        """
+        if not local_dof_space_gradient.shape == (self.local_dof_space_dim,):
+            raise ValueError(
+                f"Expected dof_space_gradient to have shape {(self.local_dof_space_dim,)}, "
+                f"but got {local_dof_space_gradient.shape}"
+            )
+        self._adjoint_input_vector.setArray(local_dof_space_gradient)
+        self._dof_to_vertex_adjoint_matrix.mult(
+            self._adjoint_input_vector, self._adjoint_output_vector
+        )
+        owned_vertex_gradient = self._adjoint_output_vector.getArray()[
+            self._p1_vertex_to_dof_map[: self._num_owned_vertices]
+        ]
+        return _gather_by_index(
+            self.comm,
+            self._global_vertex_indices[: self._num_owned_vertices],
+            owned_vertex_gradient,
+            self.global_vertex_space_dim,
+        )
 
 
 # ==================================================================================================
@@ -304,12 +496,16 @@ class FEMMatrixFactorizationAssembler:
             function_space (dlx.fem.FunctionSpace): Scalar function space of the FEM problem.
             form (ufl.Form): Weak form of the FEM matrix to factorize. The resulting matrix has to
                 be symmetric positive definite on each cell, for the cell-wise Cholesky
-                factorization to exist.
+                factorization to exist. Only cell integrals over the whole domain without
+                coefficients or constants are supported, as the assembly calls the compiled cell
+                kernel directly.
 
         Raises:
             TypeError: If PETSc is not built with real, double precision scalars.
             TypeError: If the mesh geometry is not given in double precision.
             ValueError: If the function space is not scalar-valued.
+            ValueError: If the form contains other than cell integrals over the whole domain.
+            ValueError: If the form contains coefficients or constants.
         """
         if np.dtype(PETSc.ScalarType) != np.float64:
             raise TypeError(
@@ -326,6 +522,7 @@ class FEMMatrixFactorizationAssembler:
                 "Matrix factorization assembly requires a scalar function space, but the DoF "
                 f"block size is {function_space.dofmap.index_map_bs}."
             )
+        _check_factorizable_form(form)
         cell_index_map = mesh.topology.index_map(mesh.topology.dim)
         self._communicator = mesh.comm
         self._vertex_coordinates = mesh.geometry.x
@@ -346,6 +543,9 @@ class FEMMatrixFactorizationAssembler:
         Returns:
             tuple[PETSc.Mat, PETSc.Mat]: PETSc Matrices $\widehat{M}_e$ and $L$ representing
                 the rectangular factorization of an FEM matrix.
+
+        Raises:
+            ValueError: If the local matrix of a cell is not symmetric positive definite.
         """
         block_diagonal_matrix, dof_map_matrix = self._set_up_petsc_mats()
         self._assemble_matrices_over_cells(block_diagonal_matrix, dof_map_matrix)
@@ -455,7 +655,13 @@ class FEMMatrixFactorizationAssembler:
                 ffi.NULL,  # quadrature_permutation
                 ffi.NULL,  # custom_data (only used for runtime integrals)
             )
-            cell_matrix_factor = np.linalg.cholesky(cell_matrix)
+            try:
+                cell_matrix_factor = np.linalg.cholesky(cell_matrix)
+            except np.linalg.LinAlgError as error:
+                raise ValueError(
+                    "Matrix factorization assembly requires a form that is symmetric positive "
+                    f"definite on each cell, but the matrix of cell {cell_ind} is not."
+                ) from error
             block_diagonal_matrix.setValues(
                 block_indices,
                 block_indices,

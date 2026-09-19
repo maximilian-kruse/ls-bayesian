@@ -26,6 +26,10 @@ DEFAULT_SOLVER_RELATIVE_TOLERANCE = 1e-12
 # Safeguard against stagnating solves. The preconditioned systems typically converge in far fewer
 # iterations, and exceeding the limit raises an error instead of returning an inaccurate result.
 DEFAULT_SOLVER_MAX_ITERATIONS = 1000
+# Names of the continuous Lagrange element family in basix. The SPDE forms contain no interior
+# penalty (jump) terms, so they are only a valid discretization for H^1-conforming, i.e.
+# continuous, elements.
+LAGRANGE_FAMILY_NAMES = ("Lagrange", "P")
 
 
 # ==================================================================================================
@@ -44,11 +48,12 @@ class BilaplacianPriorSettings:
             vertex-based representation.
         kappa (Real): Parameter $\kappa > 0$ in the SPDE formulation of the prior.
         tau (Real): Parameter $\tau > 0$ in the SPDE formulation of the prior.
-        robin_const (Real | None): Robin boundary condition constant. If `None`, homogeneous
-            Neumann boundary conditions are applied. Defaults to `None`.
+        robin_const (Real | None): Robin boundary condition constant $\beta \geq 0$. If `None`,
+            homogeneous Neumann boundary conditions are applied. Defaults to `None`.
         seed (int): Random seed for the internal random number generator. Defaults to `0`.
-        fe_data (tuple[str, int]): Finite element type and degree used for the function space
-            setup. Defaults to `("CG", 1)`.
+        fe_data (tuple[str, int]): Finite element family and degree used for the function space
+            setup. The family has to be continuous Lagrange, i.e. one of
+            `LAGRANGE_FAMILY_NAMES`. Defaults to `("Lagrange", 1)`.
         cg_relative_tolerance (Real): Relative tolerance for the CG solver used in the
             application of the precision operator. Defaults to
             `DEFAULT_SOLVER_RELATIVE_TOLERANCE`.
@@ -73,9 +78,12 @@ class BilaplacianPriorSettings:
     mean_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
     kappa: Annotated[Real, Is[lambda x: x > 0]]
     tau: Annotated[Real, Is[lambda x: x > 0]]
-    robin_const: Real | None = None
+    robin_const: Annotated[Real, Is[lambda x: x >= 0]] | None = None
     seed: int = 0
-    fe_data: tuple[str, Annotated[int, Is[lambda x: x > 0]]] = ("CG", 1)
+    fe_data: tuple[
+        Annotated[str, Is[lambda family: family in LAGRANGE_FAMILY_NAMES]],
+        Annotated[int, Is[lambda x: x > 0]],
+    ] = ("Lagrange", 1)
     cg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_SOLVER_RELATIVE_TOLERANCE
     cg_absolute_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
     cg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_SOLVER_MAX_ITERATIONS
@@ -273,7 +281,7 @@ class BilaplacianPriorBuilder:
         precision_operator_interface = components.InterfaceComponent(precision_operator)
         covariance_operator_interface = components.InterfaceComponent(covariance_operator)
         sampling_factor_interface = components.InterfaceComponent(
-            sampling_factor, input_indices=converter.cell_block_input_indices
+            sampling_factor, input_indices=converter.cell_block_indices
         )
         return (
             precision_operator_interface,

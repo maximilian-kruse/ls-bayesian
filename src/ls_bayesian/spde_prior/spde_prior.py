@@ -117,12 +117,20 @@ class SPDEPrior:
 
         Returns:
             float: Cost/negative log probability, up to an additive constant.
+
+        Raises:
+            RuntimeError: If the cost is negative, i.e. the precision operator is not positive
+                semi-definite.
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         difference_vector = parameter_vector_dof - self._mean_vector
         local_cost = np.inner(difference_vector, self._precision_operator.apply(difference_vector))
         cost = 0.5 * self._fem_converter.comm.allreduce(local_cost)
-        assert cost >= 0, f"Cost needs to be non-negative, but is {cost}."
+        if cost < 0:
+            raise RuntimeError(
+                f"Prior cost is negative ({cost}), the precision operator is not positive "
+                "semi-definite."
+            )
         return float(cost)
 
     # ----------------------------------------------------------------------------------------------
@@ -131,7 +139,13 @@ class SPDEPrior:
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         r"""Evaluate the gradient of the cost/negative log-probability w.r.t. the parameter vector.
 
-        Computes $\mathcal{C}^{-1} (m - \overline{m})$.
+        With $I$ the vertex-to-DoF interpolation and $u = I(m)$, the cost is
+        $J(m) = \frac{1}{2}(u - \overline{u})^T \mathcal{C}^{-1} (u - \overline{u})$, and the chain
+        rule gives $\nabla_m J(m) = I^T \mathcal{C}^{-1} (u - \overline{u})$. The adjoint $I^T$ is
+        applied via
+        [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient],
+        which coincides with the plain vertex conversion for a P1 function space, but not in
+        general (see that method's docstring).
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter candidate for
@@ -144,7 +158,7 @@ class SPDEPrior:
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         difference_vector = parameter_vector_dof - self._mean_vector
         gradient_dof = self._precision_operator.apply(difference_vector)
-        gradient = self._fem_converter.convert_dofs_to_vertex_values(gradient_dof)
+        gradient = self._fem_converter.pull_back_gradient(gradient_dof)
         return gradient
 
     # ----------------------------------------------------------------------------------------------
@@ -193,6 +207,17 @@ class SPDEPrior:
         parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         """Apply the covariance operator to a given parameter vector.
+
+        This method converts its DoF-space result back to vertex space with
+        [`FEMConverter.convert_dofs_to_vertex_values`][ls_bayesian.spde_prior.fem.FEMConverter.convert_dofs_to_vertex_values],
+        not its adjoint (unlike
+        [`apply_precision_operator`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.apply_precision_operator]):
+        the covariance operator is not a derivative, and this expresses the vertex-space field
+        that the DoF-space operator produces, matching
+        [`generate_sample`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.generate_sample]. For a
+        function space of degree higher than one, this vertex-space representation is not
+        guaranteed to be symmetric or to be the inverse of `apply_precision_operator`; it agrees
+        with it, as expected of an inverse covariance/precision pair, only for a P1 function space.
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter candidate for
@@ -244,7 +269,14 @@ class SPDEPrior:
         self,
         parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-        """Apply the precision operator to a given parameter vector.
+        r"""Apply the precision operator to a given parameter vector.
+
+        The precision operator is the (constant) Hessian of the cost, so its vertex-space
+        representation must agree with
+        [`evaluate_hessian_vector_product`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.evaluate_hessian_vector_product]:
+        with $I$ the vertex-to-DoF interpolation, this computes $I^T \mathcal{C}^{-1} I(\hat{m})$,
+        pulling the DoF-space result back to vertex space via
+        [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient].
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter candidate for
@@ -256,5 +288,5 @@ class SPDEPrior:
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         precision_applied_dof = self._precision_operator.apply(parameter_vector_dof)
-        precision_applied = self._fem_converter.convert_dofs_to_vertex_values(precision_applied_dof)
+        precision_applied = self._fem_converter.pull_back_gradient(precision_applied_dof)
         return precision_applied

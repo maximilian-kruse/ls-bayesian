@@ -329,7 +329,11 @@ class Matrix(PETScComponent):
         Args:
             input_vector (PETSc.Vec): Vector to perform Matrix-vector multiplication with.
             output_vector (PETSc.Vec): Vector to store the result of the multiplication.
+
+        Raises:
+            ValueError: If the vector sizes do not match the matrix shape.
         """
+        self._check_dimensions(input_vector, output_vector)
         self._petsc_matrix.mult(input_vector, output_vector)
 
     # ----------------------------------------------------------------------------------------------
@@ -443,8 +447,10 @@ class InverseMatrixSolver(PETScComponent):
             output_vector (PETSc.Vec): Vector to store result in.
 
         Raises:
+            ValueError: If the vector sizes do not match the matrix shape.
             RuntimeError: If the Krylov solver does not converge.
         """
+        self._check_dimensions(input_vector, output_vector)
         self._solver.solve(input_vector, output_vector)
         converged_reason = self._solver.getConvergedReason()
         if converged_reason < 0:
