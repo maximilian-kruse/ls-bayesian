@@ -405,15 +405,7 @@ class FEMConverter:
         self._dof_to_vertex_matrix.mult(
             self._dof_to_vertex_input_vector, self._dof_to_vertex_output_vector
         )
-        owned_vertex_values = self._dof_to_vertex_output_vector.getArray()[
-            self._p1_vertex_to_dof_map[: self._num_owned_vertices]
-        ]
-        return _gather_by_index(
-            self.comm,
-            self._global_vertex_indices[: self._num_owned_vertices],
-            owned_vertex_values,
-            self.global_vertex_space_dim,
-        )
+        return self._select_owned_p1_dofs_and_gather(self._dof_to_vertex_output_vector.getArray())
 
     # ----------------------------------------------------------------------------------------------
     def pull_back_gradient(
@@ -452,13 +444,23 @@ class FEMConverter:
         self._vertex_to_dof_matrix.multTranspose(
             self._adjoint_input_vector, self._adjoint_output_vector
         )
-        owned_vertex_gradient = self._adjoint_output_vector.getArray()[
-            self._p1_vertex_to_dof_map[: self._num_owned_vertices]
-        ]
+        return self._select_owned_p1_dofs_and_gather(self._adjoint_output_vector.getArray())
+
+    # ----------------------------------------------------------------------------------------------
+    def _select_owned_p1_dofs_and_gather(
+        self, p1_dof_values: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        """Select the owned-vertex entries of a full P1-DoF-ordered array and gather them.
+
+        Shared tail of `convert_dofs_to_vertex_values` and `pull_back_gradient`: both produce a
+        result in P1-DoF order (via forward interpolation or its adjoint, respectively) that must
+        be reindexed to owned-vertex order and gathered across processes into vertex order.
+        """
+        owned_vertex_values = p1_dof_values[self._p1_vertex_to_dof_map[: self._num_owned_vertices]]
         return _gather_by_index(
             self.comm,
             self._global_vertex_indices[: self._num_owned_vertices],
-            owned_vertex_gradient,
+            owned_vertex_values,
             self.global_vertex_space_dim,
         )
 

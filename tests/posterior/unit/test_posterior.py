@@ -35,7 +35,7 @@ def test_posterior_cost(posterior_setup: helpers.PosteriorSetup) -> None:
     log_posterior = _build_posterior(posterior_setup)
     parameter_vector = _random_parameter(4)
 
-    likelihood_cost, prior_cost = log_posterior.evaluate_cost(parameter_vector, split=True)
+    likelihood_cost, prior_cost = log_posterior.evaluate_cost_components(parameter_vector)
     total_cost = log_posterior.evaluate_cost(parameter_vector)
 
     solution_vector = posterior_setup.parameter_to_solution_map.matrix @ parameter_vector
@@ -68,8 +68,8 @@ def test_posterior_split_gradient(posterior_setup: helpers.PosteriorSetup) -> No
     log_posterior = _build_posterior(posterior_setup)
     parameter_vector = _random_parameter(4)
 
-    likelihood_gradient, prior_gradient = log_posterior.evaluate_gradient(
-        parameter_vector, split=True
+    likelihood_gradient, prior_gradient = log_posterior.evaluate_gradient_components(
+        parameter_vector
     )
 
     forward_matrix = posterior_setup.parameter_to_solution_map.matrix
@@ -139,11 +139,11 @@ def test_posterior_split_gradient_is_writable(
     """Returned arrays are owned by the caller and do not alias the cache."""
     log_posterior = _build_posterior(posterior_setup)
     parameter_vector = _random_parameter(4)
-    likelihood_gradient, _ = log_posterior.evaluate_gradient(parameter_vector, split=True)
+    likelihood_gradient, _ = log_posterior.evaluate_gradient_components(parameter_vector)
     expected_gradient = likelihood_gradient.copy()
 
     likelihood_gradient[:] = 0.0
-    recomputed_gradient, _ = log_posterior.evaluate_gradient(parameter_vector, split=True)
+    recomputed_gradient, _ = log_posterior.evaluate_gradient_components(parameter_vector)
 
     np.testing.assert_allclose(recomputed_gradient, expected_gradient)
 
@@ -164,6 +164,7 @@ def test_posterior_logs_evaluations(
     log_content = logfile_path.read_text()
     assert "total_cost" in log_content
     assert "prior_gradient" in log_content
+    assert "total_gradient" in log_content
 
 
 # --------------------------------------------------------------------------------------------------
@@ -226,7 +227,7 @@ def test_posterior_split_cost_sums_to_total_for_nonlinear_forward_map(
     log_posterior = _build_posterior(nonlinear_posterior_setup)
     parameter_vector = _random_parameter(4)
 
-    likelihood_cost, prior_cost = log_posterior.evaluate_cost(parameter_vector, split=True)
+    likelihood_cost, prior_cost = log_posterior.evaluate_cost_components(parameter_vector)
     total_cost = log_posterior.evaluate_cost(parameter_vector)
 
     np.testing.assert_allclose(total_cost, likelihood_cost + prior_cost)
