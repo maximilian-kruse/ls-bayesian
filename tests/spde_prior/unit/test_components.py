@@ -137,7 +137,14 @@ def test_composition_rejects_invalid_components(
 
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("component_type", ["matrix", "inverse_matrix_solver", "composition"])
-def test_component_apply_rejects_wrong_vector_size(component_type: str) -> None:
+@pytest.mark.parametrize(
+    ("wrong_size_vector", "message"),
+    [("input", "Input vector size"), ("output", "Output vector size")],
+    ids=["input", "output"],
+)
+def test_component_apply_rejects_wrong_vector_size(
+    component_type: str, wrong_size_vector: str, message: str
+) -> None:
     rng = np.random.default_rng(0)
     petsc_matrix = helpers.petsc_matrix_from_dense(helpers.random_spd_matrix(rng, SPD_MATRIX_DIM))
     matrix_component = components.Matrix(petsc_matrix)
@@ -148,10 +155,18 @@ def test_component_apply_rejects_wrong_vector_size(component_type: str) -> None:
         ),
         "composition": components.PETScComponentComposition(matrix_component, matrix_component),
     }[component_type]
-    wrong_size_input = helpers.petsc_vector_from_array(np.ones(SPD_MATRIX_DIM + 1))
+    wrong_size_vector_array = helpers.petsc_vector_from_array(np.ones(SPD_MATRIX_DIM + 1))
+    input_vector = (
+        wrong_size_vector_array if wrong_size_vector == "input" else component.create_input_vector()
+    )
+    output_vector = (
+        wrong_size_vector_array
+        if wrong_size_vector == "output"
+        else component.create_output_vector()
+    )
 
-    with pytest.raises(ValueError, match="Input vector size"):
-        component.apply(wrong_size_input, component.create_output_vector())
+    with pytest.raises(ValueError, match=message):
+        component.apply(input_vector, output_vector)
 
 
 # ==================================================================================================

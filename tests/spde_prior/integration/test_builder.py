@@ -1,10 +1,15 @@
 r"""Integration tests of the Bilaplacian prior assembled by the builder.
 
 Operators are checked in vertex space against closed-form values, mutual consistency, and dense
-counterparts computed from dolfinx-assembled matrices. For P1 spaces, the vertex-space operators
-are similar to the DoF-space operators $P = A M^{-1} A$, $C = A^{-1} M A^{-1}$ and
+counterparts computed from dolfinx-assembled matrices. For P1 spaces, the vertex-space covariance
+and factorization operators are similar to the DoF-space operators $C = A^{-1} M A^{-1}$ and
 $F = A^{-1} L^T \widehat{M}_e$, via the permutation from
-[`vertex_to_dof_selection_matrix`][tests.spde_prior.helpers.vertex_to_dof_selection_matrix].
+[`vertex_to_dof_selection_matrix`][tests.spde_prior.helpers.vertex_to_dof_selection_matrix]; see
+[`SPDEPrior.apply_covariance_operator`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.apply_covariance_operator]
+for why this does not extend to higher degrees. The precision operator $P = A M^{-1} A$, in
+contrast, is pulled back to vertex space with the adjoint
+[`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient] for
+any degree, so it is checked over all FEM cases.
 """
 
 import dolfinx as dlx
@@ -13,7 +18,7 @@ import pytest
 from beartype.roar import BeartypeCallHintViolation
 from mpi4py import MPI
 
-from ls_bayesian.spde_prior import builder, strategies
+from ls_bayesian.spde_prior import builder, fem, strategies
 from tests.spde_prior import helpers
 
 pytestmark = pytest.mark.integration
@@ -48,6 +53,33 @@ def vertex_space_operator(
 ) -> np.ndarray:
     selection_matrix = helpers.vertex_to_dof_selection_matrix(fem_space_setup.function_space)
     return selection_matrix.T @ dof_operator @ selection_matrix
+
+
+def dense_precision_operator(
+    fem_space_setup: helpers.FEMSpaceSetup,
+    assembled_matrices: helpers.AssembledMatrices,
+    robin_const: float | None,
+) -> np.ndarray:
+    r"""Vertex-space precision operator $I^T (A M^{-1} A) I$, valid for any FEM degree.
+
+    Unlike `vertex_space_operator`, which relies on the square P1 vertex-to-DoF permutation, this
+    pulls the dense DoF-space operator back with
+    [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient],
+    the adjoint $I^T$ that
+    [`SPDEPrior.apply_precision_operator`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.apply_precision_operator]
+    itself uses, so it agrees with the tested operator for any interpolation degree.
+    """
+    converter = fem.FEMConverter(fem_space_setup.function_space)
+    spde_matrix = dense_spde_matrix(assembled_matrices, robin_const)
+
+    def apply(vertex_values: np.ndarray) -> np.ndarray:
+        dof_values = converter.convert_vertex_values_to_dofs(vertex_values)
+        applied_dof = spde_matrix @ np.linalg.solve(
+            assembled_matrices.mass_matrix, spde_matrix @ dof_values
+        )
+        return converter.pull_back_gradient(applied_dof)
+
+    return helpers.materialize_operator(apply, fem_space_setup.fem_case.num_vertices)
 
 
 def materialize_precision_and_covariance(
@@ -104,16 +136,13 @@ def test_bilaplacian_prior_cost_of_constant_shift_matches_closed_form(
 
 
 # --------------------------------------------------------------------------------------------------
-@P1_CASES
 def test_bilaplacian_precision_matches_dense_operator(
     built_prior_setup: helpers.BuiltPriorSetup, assembled_matrices: helpers.AssembledMatrices
 ) -> None:
     precision, _ = materialize_precision_and_covariance(built_prior_setup)
 
-    spde_matrix = dense_spde_matrix(assembled_matrices, built_prior_setup.robin_const)
-    expected_precision = vertex_space_operator(
-        built_prior_setup.fem_space_setup,
-        spde_matrix @ np.linalg.solve(assembled_matrices.mass_matrix, spde_matrix),
+    expected_precision = dense_precision_operator(
+        built_prior_setup.fem_space_setup, assembled_matrices, built_prior_setup.robin_const
     )
     helpers.assert_allclose_normwise(precision, expected_precision, helpers.KRYLOV_TOLERANCE)
 
@@ -148,7 +177,6 @@ def test_bilaplacian_factorization_reproduces_covariance(
 
 
 # --------------------------------------------------------------------------------------------------
-@P1_CASES
 def test_bilaplacian_precision_is_symmetric_positive_definite(
     built_prior_setup: helpers.BuiltPriorSetup,
 ) -> None:

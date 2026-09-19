@@ -12,17 +12,19 @@ Functions:
 """
 
 from dataclasses import dataclass
-from typing import Self, override
+from typing import Annotated, Self, override
 
 import numpy as np
 import scipy.sparse as sp
+from beartype.vale import Is
 
 from ls_bayesian.posterior import interfaces
 
 
 # ==================================================================================================
 def assemble_vertex_observation_matrix(
-    num_vertices: int, observed_vertex_indices: np.ndarray[tuple[int], np.dtype[np.integer]]
+    num_vertices: Annotated[int, Is[lambda x: x > 0]],
+    observed_vertex_indices: np.ndarray[tuple[int], np.dtype[np.integer]],
 ) -> sp.coo_matrix:
     r"""Assemble the observation operator $\mathcal{B}$ for point observations at mesh vertices.
 
@@ -31,12 +33,13 @@ def assemble_vertex_observation_matrix(
     vertices. Each vertex may be observed at most once.
 
     Args:
-        num_vertices (int): Number of mesh vertices, i.e. the solution dimension.
+        num_vertices (Annotated[int, Is[lambda x: x > 0]]): Number of mesh vertices, i.e. the
+            solution dimension.
         observed_vertex_indices (np.ndarray[tuple[int], np.dtype[np.integer]]): Indices $j_i$ of the
             observed vertices, shape `(num_observations,)`.
 
     Raises:
-        ValueError: If the number of vertices is not positive.
+        BeartypeCallHintViolation: If the number of vertices is not positive.
         ValueError: If the indices are not one-dimensional.
         ValueError: If an index lies outside of `[0, num_vertices)`.
         ValueError: If an index occurs more than once.
@@ -44,8 +47,6 @@ def assemble_vertex_observation_matrix(
     Returns:
         sp.coo_matrix: Observation operator, shape `(num_observations, num_vertices)`.
     """
-    if num_vertices <= 0:
-        raise ValueError(f"Number of vertices must be positive, but is {num_vertices}.")
     if observed_vertex_indices.ndim != 1:
         raise ValueError(
             "Observed vertex indices must be one-dimensional, "

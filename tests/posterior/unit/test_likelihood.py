@@ -215,7 +215,7 @@ def test_observation_matrix_raises_on_duplicate_index() -> None:
 
 # --------------------------------------------------------------------------------------------------
 def test_observation_matrix_raises_on_non_positive_vertex_number() -> None:
-    with pytest.raises(ValueError, match="Number of vertices must be positive"):
+    with pytest.raises(BeartypeCallHintViolation):
         likelihood.assemble_vertex_observation_matrix(0, np.array([], dtype=np.int64))
 
 
@@ -290,7 +290,7 @@ def test_likelihood_from_vertex_observations(
 def test_likelihood_from_vertex_observations_raises_on_non_positive_vertex_number(
     likelihood_setup: helpers.LikelihoodSetup,
 ) -> None:
-    with pytest.raises(ValueError, match="Number of vertices must be positive"):
+    with pytest.raises(BeartypeCallHintViolation):
         likelihood.GaussianLogLikelihood.from_vertex_observations(
             likelihood.VertexObservationSettings(
                 likelihood_setup.data_vector,
