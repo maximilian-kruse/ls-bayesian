@@ -79,6 +79,7 @@ For non-trivial tasks:
   consistent with existing docstrings.
 
 ## Testing
+- Do not write tests until explicitly asked
 - Test with pytest
 - Every behavioral change should have appropriate tests.
 - Prefer tests that verify mathematical properties and invariants rather than only

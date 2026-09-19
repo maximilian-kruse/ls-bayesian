@@ -38,6 +38,7 @@ ls_bayesian = { path = ".", editable = true }
 beartype = ">=0.22.9,<0.23"
 numpy = ">=2.5.3,<3"
 python-gmsh = ">=4.15.2,<5"
+scipy = ">=1.18.1,<2"
 
 [tool.pixi.feature.dev.dependencies]
 ruff = ">=0.16.7,<0.17"

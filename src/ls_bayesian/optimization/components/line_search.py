@@ -1,0 +1,174 @@
+r"""Step-size selection strategies for metric-generic optimization backends.
+
+Classes:
+    LineSearchResult: Outcome of a line search: the accepted step size and the loss already
+        evaluated at the resulting point.
+    LineSearch: ABC interface for step-size selection strategies.
+    ArmijoBacktrackingLineSearchSettings: Settings for `ArmijoBacktrackingLineSearch`.
+    ArmijoBacktrackingLineSearch: Backtracking line search on the Armijo sufficient-decrease
+        condition.
+"""
+
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
+from numbers import Real
+from typing import Annotated, override
+
+import numpy as np
+from beartype.vale import Is
+
+# Standard initialization for quasi-Newton line searches (`optimization.tex`, line 95): the
+# quasi-Newton direction itself already incorporates curvature information, so a full step is
+# usually accepted or nearly so.
+DEFAULT_INITIAL_STEP_SIZE = 1.0
+# Standard Armijo sufficient-decrease constant (Nocedal & Wright, "Numerical Optimization", 2006,
+# Sec. 3.1): a small value close to 0 accepts almost any decrease, which is typical practice for
+# quasi-Newton methods (as opposed to steepest descent, which needs a stricter tolerance).
+DEFAULT_SUFFICIENT_DECREASE_CONSTANT = 1e-4
+# Halving the step on each backtrack (`optimization.tex`, line 95, uses beta > 1 as a divisor),
+# the standard, simplest choice (Nocedal & Wright, "Numerical Optimization", 2006, Sec. 3.1).
+DEFAULT_BACKTRACKING_FACTOR = 2.0
+# With the defaults above, 50 backtracking steps shrink the step size to 2^-50 (~1e-15) before
+# giving up, comfortably below double-precision step sizes that could still be meaningful. Beyond
+# that, a further decrease cannot be represented reliably, indicating the search direction is
+# likely not a descent direction (e.g. due to numerical error), so the search should raise instead
+# of continuing to loop, unlike the notes' unbounded `while` loop (line 142-150).
+DEFAULT_MAX_BACKTRACKING_STEPS = 50
+
+
+# ==================================================================================================
+@dataclass(frozen=True)
+class LineSearchResult:
+    r"""Outcome of a line search.
+
+    Bundles the accepted step size with the loss value the search already evaluated at the
+    resulting point ($I(\mathbf{m}_k + \tau\mathbf{p}_k)$), so callers do not need to re-evaluate
+    the (potentially expensive) loss function at that point themselves.
+
+    Attributes:
+        step_size (float): Accepted step size $\tau$.
+        loss (float): Loss at $\mathbf{m}_k + \tau\mathbf{p}_k$.
+    """
+
+    step_size: float
+    loss: float
+
+
+# ==================================================================================================
+class LineSearchStrategy(ABC):
+    """ABC interface for step-size selection strategies.
+
+    Methods:
+        find_step_size: Find a step size along a search direction satisfying the strategy's
+            acceptance condition.
+    """
+
+    # ----------------------------------------------------------------------------------------------
+    @abstractmethod
+    def find_step_size(
+        self,
+        current_point: np.ndarray[tuple[int], np.dtype[np.float64]],
+        search_direction: np.ndarray[tuple[int], np.dtype[np.float64]],
+        current_loss: float,
+        directional_derivative: float,
+        loss_function: Callable[[np.ndarray[tuple[int], np.dtype[np.float64]]], float],
+    ) -> LineSearchResult:
+        r"""Find a step size $\tau$ along `search_direction` satisfying the strategy's acceptance
+        condition.
+
+        Args:
+            current_point (np.ndarray[tuple[int], np.dtype[np.float64]]): Current iterate
+                $\mathbf{m}_k$.
+            search_direction (np.ndarray[tuple[int], np.dtype[np.float64]]): Search direction
+                $\mathbf{p}_k$.
+            current_loss (float): Loss at `current_point`, $I(\mathbf{m}_k)$.
+            directional_derivative (float): Directional derivative
+                $(\mathbf{g}_k, \mathbf{p}_k)$, precomputed by the caller in the inner product the
+                search direction was computed in.
+            loss_function (Callable[[np.ndarray[tuple[int], np.dtype[np.float64]]], float]):
+                Callable evaluating the loss at a point.
+
+        Returns:
+            LineSearchResult: Accepted step size and the loss already evaluated at the resulting
+                point.
+        """
+
+
+# ==================================================================================================
+@dataclass
+class ArmijoBacktrackingLineSearchSettings:
+    r"""Settings for `ArmijoBacktrackingLineSearch`.
+
+    The field constraints are validated on initialization.
+
+    Attributes:
+        initial_step_size (Real): Initial step size $\tau^{(0)}$. Defaults to
+            `DEFAULT_INITIAL_STEP_SIZE`.
+        sufficient_decrease_constant (Real): Armijo constant $c_1 \in (0, 1)$. Defaults to
+            `DEFAULT_SUFFICIENT_DECREASE_CONSTANT`.
+        backtracking_factor (Real): Backtracking divisor $\beta > 1$;
+            $\tau^{(i+1)} = \tau^{(i)} / \beta$. Defaults to `DEFAULT_BACKTRACKING_FACTOR`.
+        max_backtracking_steps (int): Maximum number of backtracking steps before raising.
+            Defaults to `DEFAULT_MAX_BACKTRACKING_STEPS`.
+    """
+
+    initial_step_size: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_INITIAL_STEP_SIZE
+    sufficient_decrease_constant: Annotated[Real, Is[lambda x: 0 < x < 1]] = (
+        DEFAULT_SUFFICIENT_DECREASE_CONSTANT
+    )
+    backtracking_factor: Annotated[Real, Is[lambda x: x > 1]] = DEFAULT_BACKTRACKING_FACTOR
+    max_backtracking_steps: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MAX_BACKTRACKING_STEPS
+
+
+# ==================================================================================================
+class ArmijoBacktrackingLineSearch(LineSearchStrategy):
+    r"""Backtracking line search on the Armijo sufficient-decrease condition.
+
+    For step size $\tau$, accepts the first $\tau^{(i)} = \tau^{(0)} / \beta^i$ satisfying
+    $I(\mathbf{m}_k + \tau\mathbf{p}_k) \leq I(\mathbf{m}_k) + c_1\tau(\mathbf{g}_k,\mathbf{p}_k)$
+    (`optimization.tex`, eq. 91 / lines 142-150). Unlike the notes' pseudocode, the backtracking
+    loop is capped at `settings.max_backtracking_steps`, raising instead of looping indefinitely
+    if no acceptable step is found; this can only happen if `search_direction` is not a genuine
+    descent direction, e.g. from numerical error.
+    """
+
+    # ----------------------------------------------------------------------------------------------
+    def __init__(self, settings: ArmijoBacktrackingLineSearchSettings) -> None:
+        """Initialize the line search.
+
+        Args:
+            settings (ArmijoBacktrackingLineSearchSettings): Settings for the line search.
+        """
+        self._settings = settings
+
+    # ----------------------------------------------------------------------------------------------
+    @override
+    def find_step_size(
+        self,
+        current_point: np.ndarray[tuple[int], np.dtype[np.float64]],
+        search_direction: np.ndarray[tuple[int], np.dtype[np.float64]],
+        current_loss: float,
+        directional_derivative: float,
+        loss_function: Callable[[np.ndarray[tuple[int], np.dtype[np.float64]]], float],
+    ) -> LineSearchResult:
+        r"""Find a step size satisfying the Armijo sufficient-decrease condition.
+
+        Raises:
+            RuntimeError: If no acceptable step size is found within
+                `settings.max_backtracking_steps` backtracking steps.
+        """
+        step_size = self._settings.initial_step_size
+        for _ in range(self._settings.max_backtracking_steps + 1):
+            candidate_loss = loss_function(current_point + step_size * search_direction)
+            if candidate_loss <= current_loss + (
+                self._settings.sufficient_decrease_constant * step_size * directional_derivative
+            ):
+                return LineSearchResult(step_size=step_size, loss=candidate_loss)
+            step_size /= self._settings.backtracking_factor
+
+        raise RuntimeError(
+            "Armijo backtracking line search did not find an acceptable step size within "
+            f"{self._settings.max_backtracking_steps} steps. The search direction may not be a "
+            "descent direction."
+        )
