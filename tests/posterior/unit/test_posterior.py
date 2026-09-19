@@ -133,7 +133,7 @@ def test_posterior_detects_in_place_parameter_update(
 
 
 # --------------------------------------------------------------------------------------------------
-def test_posterior_split_gradient_is_writeable(
+def test_posterior_split_gradient_is_writable(
     posterior_setup: helpers.PosteriorSetup,
 ) -> None:
     """Returned arrays are owned by the caller and do not alias the cache."""
