@@ -222,3 +222,7 @@ __marimo__/
 
 # hatch-vcs generated version file
 src/ls_bayesian/_version.py
+
+
+# Claude
+.claude/
