@@ -57,6 +57,8 @@ pytest = ">=9.1.1,<10"
 pytest-cov = ">=7.1.0,<8"
 pytest-xdist = ">=3.8.0,<4"
 pytest-mock = ">=3.15.1,<4"
+nbclient = ">=0.11.0,<0.12"
+nbformat = ">=5.11.1,<6"
 
 [tool.pixi.feature.prior.dependencies]
 fenics-dolfinx = ">=0.11.0,<0.12"
@@ -102,5 +104,5 @@ markers = [
   "unit: unit tests",
   "integration: integration tests",
   "slow: tests with long runtime",
-  "parallel: tests requiring several MPI processes, run via `mpirun -n 2 python -m pytest -m parallel -p no:cacheprovider`",
+  "spde_prior_parallel: spde_prior tests requiring several MPI processes, run via `mpirun -n 2 python -m pytest -m spde_prior_parallel -p no:cacheprovider`",
 ]
