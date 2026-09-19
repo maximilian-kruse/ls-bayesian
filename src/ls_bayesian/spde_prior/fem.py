@@ -121,7 +121,7 @@ def get_ordered_vertices_and_cells(
     """
     if mesh.geometry.cmaps[0].degree != 1:
         raise ValueError(
-            "input_ordered_mesh_geometry requires an affine mesh geometry, but the geometry has "
+            "get_ordered_vertices_and_cells requires an affine mesh geometry, but the geometry has "
             f"degree {mesh.geometry.cmaps[0].degree}."
         )
     communicator = mesh.comm
