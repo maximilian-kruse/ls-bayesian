@@ -24,7 +24,7 @@ from mpi4py import MPI
 from nbclient import NotebookClient
 from petsc4py import PETSc
 
-from ls_bayesian.spde_prior import builder, components, fem, spde_prior
+from ls_bayesian.spde_prior import builder, components, fem, spde_prior, strategies
 
 # ==================================================================================================
 # Dolfinx meshes require an MPI communicator, all serial test objects live on a single process.
@@ -240,8 +240,10 @@ def build_bilaplacian_prior(
         "amg_relative_tolerance": SOLVER_RELATIVE_TOLERANCE,
     }
     settings_arguments.update(settings_overrides)
-    settings = builder.BilaplacianPriorSettings(**settings_arguments)
-    prior = builder.BilaplacianPriorBuilder(settings).build()
+    settings = builder.SPDEPriorSettings(**settings_arguments)
+    prior = builder.SPDEPriorBuilder(
+        settings, strategies.BilaplacianComponentStrategy()
+    ).build()
     return BuiltPriorSetup(fem_space_setup, robin_const, mean_vector, prior)
 
 

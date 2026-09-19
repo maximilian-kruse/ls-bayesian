@@ -18,7 +18,7 @@ import pytest
 from dolfinx.fem import petsc
 from mpi4py import MPI
 
-from ls_bayesian.spde_prior import builder, fem, spde_prior
+from ls_bayesian.spde_prior import builder, fem, spde_prior, strategies
 
 pytestmark = [
     pytest.mark.parallel,
@@ -58,7 +58,7 @@ def _input_ordered_field(mesh: dlx.mesh.Mesh) -> np.ndarray:
 
 
 def _build_prior(mesh: dlx.mesh.Mesh, fe_data: tuple[str, int]) -> spde_prior.SPDEPrior:
-    settings = builder.BilaplacianPriorSettings(
+    settings = builder.SPDEPriorSettings(
         mesh,
         np.zeros(mesh.topology.index_map(0).size_global),
         kappa=5.0,
@@ -67,7 +67,9 @@ def _build_prior(mesh: dlx.mesh.Mesh, fe_data: tuple[str, int]) -> spde_prior.SP
         seed=0,
         fe_data=fe_data,
     )
-    return builder.BilaplacianPriorBuilder(settings).build()
+    return builder.SPDEPriorBuilder(
+        settings, strategies.BilaplacianComponentStrategy()
+    ).build()
 
 
 def _apply_prior_operation(

@@ -13,7 +13,7 @@ import pytest
 from beartype.roar import BeartypeCallHintViolation
 from mpi4py import MPI
 
-from ls_bayesian.spde_prior import builder
+from ls_bayesian.spde_prior import builder, strategies
 from tests.spde_prior import helpers
 
 pytestmark = pytest.mark.integration
@@ -72,14 +72,16 @@ def matern_pointwise_variance(kappa: float, tau: float) -> float:
 def center_vertex_variance(resolution: int) -> float:
     mesh = dlx.mesh.create_unit_square(MPI.COMM_SELF, resolution, resolution)
     num_vertices = mesh.geometry.x.shape[0]
-    settings = builder.BilaplacianPriorSettings(
+    settings = builder.SPDEPriorSettings(
         mesh,
         np.zeros(num_vertices),
         kappa=MATERN_KAPPA,
         tau=helpers.TAU,
         robin_const=helpers.ROBIN_CONSTANT,
     )
-    prior = builder.BilaplacianPriorBuilder(settings).build()
+    prior = builder.SPDEPriorBuilder(
+        settings, strategies.BilaplacianComponentStrategy()
+    ).build()
     vertex_coordinates = helpers.input_ordered_vertex_coordinates(mesh)
     center_index = np.argmin(np.linalg.norm(vertex_coordinates[:, :2] - 0.5, axis=1))
     return float(prior.apply_covariance_operator(np.eye(num_vertices)[center_index])[center_index])
@@ -248,18 +250,20 @@ def test_bilaplacian_settings_reject_invalid_values(invalid_setting: dict) -> No
     }
 
     with pytest.raises(BeartypeCallHintViolation):
-        builder.BilaplacianPriorSettings(**(settings_arguments | invalid_setting))
+        builder.SPDEPriorSettings(**(settings_arguments | invalid_setting))
 
 
 # --------------------------------------------------------------------------------------------------
 def test_bilaplacian_builder_rejects_wrong_mean_length() -> None:
     mesh = helpers.create_unit_interval_mesh(helpers.MESH_COMMUNICATOR)
-    settings = builder.BilaplacianPriorSettings(
+    settings = builder.SPDEPriorSettings(
         mesh, np.zeros(mesh.geometry.x.shape[0] + 1), kappa=helpers.KAPPA, tau=helpers.TAU
     )
 
     with pytest.raises(ValueError, match="Expected vertex_values to have shape"):
-        builder.BilaplacianPriorBuilder(settings).build()
+        builder.SPDEPriorBuilder(
+            settings, strategies.BilaplacianComponentStrategy()
+        ).build()
 
 
 # --------------------------------------------------------------------------------------------------

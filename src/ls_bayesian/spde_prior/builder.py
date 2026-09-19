@@ -1,10 +1,14 @@
 """Builders for prior objects from lower-level components.
 
 Classes:
-    BilaplacianPriorSettings: Settings for the bilaplacian prior builder.
-    BilaplacianPriorBuilder: Builder for a Bilaplacian prior.
+    SPDEPriorSettings: Settings for the SPDE prior builder.
+    SPDEComponentStrategy: ABC interface for the composition of components into precision,
+        covariance and sampling-factor operators.
+    SPDEPriorBuilder: Builder for an SPDE-based prior, parameterized by a
+        [`SPDEComponentStrategy`][ls_bayesian.spde_prior.builder.SPDEComponentStrategy].
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from numbers import Real
 from typing import Annotated
@@ -34,13 +38,13 @@ LAGRANGE_FAMILY_NAMES = ("Lagrange", "P")
 
 # ==================================================================================================
 @dataclass
-class BilaplacianPriorSettings:
-    r"""Settings for the bilaplacian prior builder.
+class SPDEPriorSettings:
+    r"""Settings for the SPDE prior builder.
 
-    This dataclass collects all configuration options required to set up a bilaplacian prior using
-    the [`BilaplacianPriorBuilder`][ls_bayesian.spde_prior.builder.BilaplacianPriorBuilder] class.
-    The builder distributes these settings to the respective components that are assembled within
-    the builder. The field constraints are validated on initialization.
+    This dataclass collects all configuration options required to set up an SPDE-based prior using
+    the [`SPDEPriorBuilder`][ls_bayesian.spde_prior.builder.SPDEPriorBuilder] class. The builder
+    distributes these settings to the respective components that are assembled within the builder.
+    The field constraints are validated on initialization.
 
     Attributes:
         mesh (dlx.mesh.Mesh): Dolfinx mesh on which the prior is defined.
@@ -93,27 +97,80 @@ class BilaplacianPriorSettings:
 
 
 # ==================================================================================================
-class BilaplacianPriorBuilder:
-    r"""Builder for a Bilaplacian prior.
+class SPDEComponentStrategy(ABC):
+    r"""ABC interface for the composition of components into an SPDE-based prior's operators.
 
-    Specific builder class for a bilaplacian prior, i.e. the distribution of the solution of the
-    SPDE $\tau(\kappa^2 - \Delta) m = \mathcal{W}$ with white noise $\mathcal{W}$. Its covariance
-    operator $\mathcal{C} = (\tau(\kappa^2 - \Delta))^{-2}$ is the inverse of a squared elliptic
-    operator, discretized as $\mathcal{C} = A^{-1} M A^{-1}$ with mass matrix $M$ and SPDE matrix
-    $A$.
+    An SPDE-based prior is fully characterized, at the component level, by the composition of a
+    mass matrix $M$, SPDE matrix $A$, block-diagonal matrix $\widehat{M}_e$ and transposed DoF map
+    matrix $L^T$ (and their inverses) into three operators: the precision operator, the covariance
+    operator, and the sampling factor. Which composition realizes these operators depends on the
+    order of the underlying SPDE (e.g. bilaplacian vs. a first-order formulation); this interface
+    isolates that choice so that
+    [`SPDEPriorBuilder`][ls_bayesian.spde_prior.builder.SPDEPriorBuilder] itself stays agnostic to
+    it. All other steps of the build pipeline (FEM assembly, interface wrapping) are independent of
+    this choice and remain fixed in the builder.
 
     Methods:
-        build: Build the Bilaplacian prior.
+        build_components: Build precision operator, covariance operator and sampling factor
+            components from FEM matrices and solver settings.
+    """
+
+    @abstractmethod
+    def build_components(
+        self,
+        mass_matrix: PETSc.Mat,
+        spde_matrix: PETSc.Mat,
+        block_diagonal_matrix: PETSc.Mat,
+        dof_map_matrix: PETSc.Mat,
+        cg_solver_settings: components.InverseMatrixSolverSettings,
+        amg_solver_settings: components.InverseMatrixSolverSettings,
+    ) -> tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
+        r"""Build PETSc components for the prior's operators from FEM matrices.
+
+        Args:
+            mass_matrix (PETSc.Mat): Mass matrix $M$.
+            spde_matrix (PETSc.Mat): SPDE matrix $A$.
+            block_diagonal_matrix (PETSc.Mat): Block-diagonal matrix $\widehat{M}_e$.
+            dof_map_matrix (PETSc.Mat): Transposed DoF map matrix $L^T$.
+            cg_solver_settings (components.InverseMatrixSolverSettings): Solver settings for the
+                CG-preconditioned inverse of the mass matrix.
+            amg_solver_settings (components.InverseMatrixSolverSettings): Solver settings for the
+                AMG-preconditioned inverse of the SPDE matrix.
+
+        Returns:
+            tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
+                Precision operator, covariance operator, sampling factor.
+        """
+
+
+# ==================================================================================================
+class SPDEPriorBuilder:
+    r"""Builder for an SPDE-based prior.
+
+    Builder class for a prior given as the solution of an elliptic SPDE, assembled from FEM
+    matrices via a [`SPDEComponentStrategy`][ls_bayesian.spde_prior.builder.SPDEComponentStrategy].
+    The strategy determines the composition of the mass matrix $M$ and SPDE matrix $A$ (and their
+    inverses) into the prior's precision operator, covariance operator and sampling factor; the
+    builder itself only handles the strategy-independent steps, i.e. FEM assembly and interface
+    wrapping.
+
+    Methods:
+        build: Build the SPDE-based prior.
     """
 
     # ----------------------------------------------------------------------------------------------
-    def __init__(self, settings: BilaplacianPriorSettings) -> None:
-        """Initialize the builder with the given settings.
+    def __init__(
+        self, settings: SPDEPriorSettings, component_strategy: SPDEComponentStrategy
+    ) -> None:
+        """Initialize the builder with the given settings and component strategy.
 
         Args:
-            settings (BilaplacianPriorSettings): Settings for the Bilaplacian prior.
+            settings (SPDEPriorSettings): Settings for the SPDE-based prior.
+            component_strategy (SPDEComponentStrategy): Strategy for composing FEM matrices into
+                the prior's precision operator, covariance operator and sampling factor.
 
         """
+        self._component_strategy = component_strategy
         self._mesh = settings.mesh
         self._mean_vector = settings.mean_vector
         self._kappa = settings.kappa
@@ -139,28 +196,36 @@ class BilaplacianPriorBuilder:
 
     # ----------------------------------------------------------------------------------------------
     def build(self) -> spde_prior.SPDEPrior:
-        """Build the Bilaplacian prior.
+        """Build the SPDE-based prior.
 
-        Internally, this method assembles all dolfinx structures, composes a hierarchy of
-        [`PETScComponents`][ls_bayesian.spde_prior.components.PETScComponent], wraps them in
-        [`InterfaceComponents`][ls_bayesian.spde_prior.components.InterfaceComponent] and hands them
-        to the [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] class.
+        Internally, this method assembles all dolfinx structures, delegates the composition of a
+        hierarchy of [`PETScComponents`][ls_bayesian.spde_prior.components.PETScComponent] to the
+        injected [`SPDEComponentStrategy`][ls_bayesian.spde_prior.builder.SPDEComponentStrategy],
+        wraps them in [`InterfaceComponents`][ls_bayesian.spde_prior.components.InterfaceComponent]
+        and hands them to the [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] class.
 
         Returns:
-            spde_prior.SPDEPrior: The constructed Bilaplacian prior.
+            spde_prior.SPDEPrior: The constructed SPDE-based prior.
         """
         mass_matrix, spde_matrix, block_diagonal_matrix, dof_map_matrix, converter = (
             self._build_fem_structures()
         )
-        precision_operator, covariance_operator, sampling_factor = self._build_components(
-            mass_matrix, spde_matrix, block_diagonal_matrix, dof_map_matrix
+        precision_operator, covariance_operator, sampling_factor = (
+            self._component_strategy.build_components(
+                mass_matrix,
+                spde_matrix,
+                block_diagonal_matrix,
+                dof_map_matrix,
+                self._cg_solver_settings,
+                self._amg_solver_settings,
+            )
         )
         precision_operator_interface, covariance_operator_interface, sampling_factor_interface = (
             self._build_interfaces(
                 precision_operator, covariance_operator, sampling_factor, converter
             )
         )
-        bilaplacian_prior = spde_prior.SPDEPrior(
+        spde_based_prior = spde_prior.SPDEPrior(
             self._mean_vector,
             precision_operator_interface,
             covariance_operator_interface,
@@ -168,7 +233,7 @@ class BilaplacianPriorBuilder:
             converter,
             seed=self._seed,
         )
-        return bilaplacian_prior
+        return spde_based_prior
 
     # ----------------------------------------------------------------------------------------------
     def _build_fem_structures(
@@ -198,61 +263,6 @@ class BilaplacianPriorBuilder:
         converter = fem.FEMConverter(function_space)
 
         return mass_matrix, spde_matrix, block_diagonal_matrix, dof_map_matrix, converter
-
-    # ----------------------------------------------------------------------------------------------
-    def _build_components(
-        self,
-        mass_matrix: PETSc.Mat,
-        spde_matrix: PETSc.Mat,
-        block_diagonal_matrix: PETSc.Mat,
-        dof_map_matrix: PETSc.Mat,
-    ) -> tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
-        r"""Build PETSc components for bilaplacian prior from FEM matrices.
-
-        The main components for the prior are:
-
-        1. Precision operator: $\mathcal{C}^{-1} = A M^{-1} A$
-        2. Covariance operator: $\mathcal{C} = A^{-1} M A^{-1}$
-        3. Sampling factor: $\widehat{\mathcal{C}} = A^{-1} L^T \widehat{M}_e$
-
-        Args:
-            mass_matrix (PETSc.Mat): Mass matrix $M$.
-            spde_matrix (PETSc.Mat): SPDE matrix $A$.
-            block_diagonal_matrix (PETSc.Mat): Block-diagonal matrix $\widehat{M}_e$.
-            dof_map_matrix (PETSc.Mat): Transposed DoF map matrix $L^T$.
-
-        Returns:
-            tuple[components.PETScComponent,
-                  components.PETScComponent,
-                  components.PETScComponent]:
-                Precision operator $\mathcal{C}^{-1}$,
-                covariance operator $\mathcal{C}$,
-                sampling factor $\widehat{\mathcal{C}}$.
-        """
-        # Set up base components
-        mass_matrix_component = components.Matrix(mass_matrix)
-        spde_matrix_component = components.Matrix(spde_matrix)
-        block_diagonal_matrix_component = components.Matrix(block_diagonal_matrix)
-        dof_map_matrix_component = components.Matrix(dof_map_matrix)
-        mass_matrix_inverse_component = components.InverseMatrixSolver(
-            self._cg_solver_settings, mass_matrix
-        )
-        spde_matrix_inverse_component = components.InverseMatrixSolver(
-            self._amg_solver_settings, spde_matrix
-        )
-        # Bilaplacian precision:C^{-1} = A M^{-1} A
-        precision_operator = components.PETScComponentComposition(
-            spde_matrix_component, mass_matrix_inverse_component, spde_matrix_component
-        )
-        # Bilaplacian covariance: C = A^{-1} M A^{-1}
-        covariance_operator = components.PETScComponentComposition(
-            spde_matrix_inverse_component, mass_matrix_component, spde_matrix_inverse_component
-        )
-        # Sampling factor: \widehat{C} = A^{-1} \widehat{M} = A^{-1} L^T \widehat{M_e}
-        sampling_factor = components.PETScComponentComposition(
-            block_diagonal_matrix_component, dof_map_matrix_component, spde_matrix_inverse_component
-        )
-        return precision_operator, covariance_operator, sampling_factor
 
     # ----------------------------------------------------------------------------------------------
     def _build_interfaces(
