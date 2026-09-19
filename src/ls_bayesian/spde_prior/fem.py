@@ -308,8 +308,6 @@ class FEMConverter:
         self.global_vertex_space_dim = vertex_index_map.size_global
         self.local_dof_space_dim = dof_index_map.size_local
         self.global_dof_space_dim = dof_index_map.size_global
-        self._dof_function = dlx.fem.Function(function_space)
-        self._vertex_function = dlx.fem.Function(vertex_space)
 
         self._num_owned_vertices = vertex_index_map.size_local
         self._p1_vertex_to_dof_map = scifem.vertex_to_dofmap(vertex_space)
@@ -325,15 +323,26 @@ class FEMConverter:
             owned_cell_indices[:, None] * num_cell_dofs + np.arange(num_cell_dofs)
         ).reshape(-1)
 
-        # Adjoint $I^T$ of the vertex-to-DoF interpolation $I$, for `pull_back_gradient`. Built as
-        # an explicit transpose of dolfinx's own interpolation matrix (verified to reproduce
-        # `convert_vertex_values_to_dofs` exactly), so that applying it is an ordinary assembled
-        # matrix-vector product, with no manual handling of ghost contributions required.
-        vertex_to_dof_matrix = petsc.interpolation_matrix(vertex_space, function_space)
-        vertex_to_dof_matrix.assemble()
-        self._dof_to_vertex_adjoint_matrix = vertex_to_dof_matrix.transpose()
-        self._adjoint_input_vector = self._dof_to_vertex_adjoint_matrix.createVecRight()
-        self._adjoint_output_vector = self._dof_to_vertex_adjoint_matrix.createVecLeft()
+        # Vertex-to-DoF interpolation $I$ and DoF-to-vertex interpolation $R$, assembled once as
+        # sparse matrices rather than repeating dolfinx's `Function.interpolate` on every
+        # `convert_*` call. Applying either is then an ordinary assembled matrix-vector product,
+        # with no manual handling of ghost contributions required.
+        self._vertex_to_dof_matrix = petsc.interpolation_matrix(vertex_space, function_space)
+        self._vertex_to_dof_matrix.assemble()
+        self._vertex_to_dof_input_vector = self._vertex_to_dof_matrix.createVecRight()
+        self._vertex_to_dof_output_vector = self._vertex_to_dof_matrix.createVecLeft()
+
+        self._dof_to_vertex_matrix = petsc.interpolation_matrix(function_space, vertex_space)
+        self._dof_to_vertex_matrix.assemble()
+        self._dof_to_vertex_input_vector = self._dof_to_vertex_matrix.createVecRight()
+        self._dof_to_vertex_output_vector = self._dof_to_vertex_matrix.createVecLeft()
+
+        # Adjoint $I^T$, used by `pull_back_gradient`, is applied via `multTranspose` against $I$
+        # itself (verified to reproduce `convert_vertex_values_to_dofs` exactly), rather than a
+        # separately assembled transposed matrix: `Mat.transpose()` without an explicit `out=`
+        # argument transposes in place, which would otherwise corrupt `_vertex_to_dof_matrix`.
+        self._adjoint_input_vector = self._vertex_to_dof_matrix.createVecLeft()
+        self._adjoint_output_vector = self._vertex_to_dof_matrix.createVecRight()
 
     # ----------------------------------------------------------------------------------------------
     def convert_vertex_values_to_dofs(
@@ -358,13 +367,15 @@ class FEMConverter:
                 f"Expected vertex_values to have shape {(self.global_vertex_space_dim,)}, "
                 f"but got {global_vertex_values.shape}"
             )
-        # All local vertices, including ghosts, are set from the complete vector, so no ghost
-        # update is required before interpolation.
-        self._vertex_function.x.array[self._p1_vertex_to_dof_map] = global_vertex_values[
-            self._global_vertex_indices
-        ]
-        self._dof_function.interpolate(self._vertex_function)
-        return self._dof_function.x.array[: self.local_dof_space_dim].copy()
+        owned_dof_ordered_vertex_values = np.empty(self._num_owned_vertices, dtype=np.float64)
+        owned_dof_ordered_vertex_values[self._p1_vertex_to_dof_map[: self._num_owned_vertices]] = (
+            global_vertex_values[self._global_vertex_indices[: self._num_owned_vertices]]
+        )
+        self._vertex_to_dof_input_vector.setArray(owned_dof_ordered_vertex_values)
+        self._vertex_to_dof_matrix.mult(
+            self._vertex_to_dof_input_vector, self._vertex_to_dof_output_vector
+        )
+        return self._vertex_to_dof_output_vector.getArray().copy()
 
     # ----------------------------------------------------------------------------------------------
     def convert_dofs_to_vertex_values(
@@ -390,10 +401,11 @@ class FEMConverter:
                 f"Expected dof_values to have shape {(self.local_dof_space_dim,)}, "
                 f"but got {local_dof_values.shape}"
             )
-        self._dof_function.x.array[: self.local_dof_space_dim] = local_dof_values
-        self._dof_function.x.scatter_forward()
-        self._vertex_function.interpolate(self._dof_function)
-        owned_vertex_values = self._vertex_function.x.array[
+        self._dof_to_vertex_input_vector.setArray(local_dof_values)
+        self._dof_to_vertex_matrix.mult(
+            self._dof_to_vertex_input_vector, self._dof_to_vertex_output_vector
+        )
+        owned_vertex_values = self._dof_to_vertex_output_vector.getArray()[
             self._p1_vertex_to_dof_map[: self._num_owned_vertices]
         ]
         return _gather_by_index(
@@ -437,7 +449,7 @@ class FEMConverter:
                 f"but got {local_dof_space_gradient.shape}"
             )
         self._adjoint_input_vector.setArray(local_dof_space_gradient)
-        self._dof_to_vertex_adjoint_matrix.mult(
+        self._vertex_to_dof_matrix.multTranspose(
             self._adjoint_input_vector, self._adjoint_output_vector
         )
         owned_vertex_gradient = self._adjoint_output_vector.getArray()[

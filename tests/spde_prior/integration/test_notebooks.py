@@ -47,7 +47,6 @@ COMPONENTS_REFERENCE_VALUES = {
 
 
 # ==================================================================================================
-@pytest.mark.slow
 @pytest.mark.parametrize(
     ("notebook_path", "reference_values"),
     [

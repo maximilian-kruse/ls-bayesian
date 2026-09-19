@@ -263,7 +263,6 @@ def test_bilaplacian_builder_rejects_wrong_mean_length() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-@pytest.mark.slow
 def test_bilaplacian_marginal_variance_matches_matern() -> None:
     """The discretization error of the fine mesh is bounded by the change under refinement.
 

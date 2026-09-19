@@ -1,7 +1,7 @@
 """Checks that the SPDE prior works in parallel.
 
 The tests run on `MPI.COMM_WORLD` and are skipped for a single process. Run them with e.g.
-`mpirun -n 2 python -m pytest tests/spde_prior/parallel -m spde_prior_parallel -p no:cacheprovider`.
+`mpirun -n 2 python -m pytest tests/spde_prior/parallel -m parallel -p no:cacheprovider`.
 
 Vertex vectors are given in the input node order of the mesh, which does not depend on the number
 of processes. Every rank holds the complete vector. The expected values are the results of the same
@@ -21,7 +21,7 @@ from mpi4py import MPI
 from ls_bayesian.spde_prior import builder, fem, spde_prior
 
 pytestmark = [
-    pytest.mark.spde_prior_parallel,
+    pytest.mark.parallel,
     pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="requires several MPI processes"),
 ]
 
