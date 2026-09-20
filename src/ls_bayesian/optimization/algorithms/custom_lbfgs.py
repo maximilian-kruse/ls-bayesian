@@ -4,12 +4,11 @@ Classes:
     CorrectionPair: One correction pair $(s_i, y_i, \rho_i)$ of the limited-memory Hessian
         approximation.
     CorrectionPairStore: Bounded FIFO memory of the last $M$ correction pairs.
-    MetricLBFGSSettings: Settings for `MetricLBFGSOptimizer`.
-    MetricLBFGSOptimizer: L-BFGS with cautious updating, generalized to an arbitrary inner
+    CustomLBFGSSettings: Settings for `CustomLBFGSOptimizer`.
+    CustomLBFGSOptimizer: L-BFGS with cautious updating, generalized to an arbitrary inner
         product.
 
 Functions:
-    identity_seed_operator: The identity seed operator $\mathbf{H}_k^0 = \mathbf{I}$.
     two_loop_recursion: L-BFGS two-loop recursion, computing a search direction from the current
         gradient and stored correction pairs, without forming the inverse-Hessian approximation
         explicitly.
@@ -30,43 +29,14 @@ from ls_bayesian.optimization.components.line_search import LineSearchStrategy
 from ls_bayesian.optimization.model import OptimizationModel
 from ls_bayesian.optimization.optimizer import (
     BaseOptimizer,
+    IterationCallback,
     OptimizationHistory,
     OptimizationResult,
 )
 
-# Standard L-BFGS memory size (Nocedal & Wright, "Numerical Optimization", 2006, Sec. 7.2):
-# commonly chosen between 3 and 20; 10 is a widely used, moderate default.
-DEFAULT_MEMORY_SIZE = 10
-# Generic safeguard against non-termination; not tied to any specific problem scale.
-DEFAULT_MAXIMUM_NUM_ITERATIONS = 1000
-# A typical convergence tolerance on the gradient norm for double-precision optimization.
-DEFAULT_GRADIENT_NORM_TOLERANCE = 1e-6
-
 type SeedOperator = Callable[
     [np.ndarray[tuple[int], np.dtype[np.float64]]], np.ndarray[tuple[int], np.dtype[np.float64]]
 ]
-
-
-# ==================================================================================================
-def identity_seed_operator(
-    vector: np.ndarray[tuple[int], np.dtype[np.float64]],
-) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-    r"""The identity seed operator, $\mathbf{H}_k^0 = \mathbf{I}$.
-
-    The default initial inverse-Hessian approximation for the two-loop recursion. In a
-    Cameron-Martin space induced by a Gaussian prior's covariance, the prior term's Hessian with
-    respect to the Cameron-Martin inner product is exactly the identity, making this the natural
-    "structured seed matrix" choice (Mannel & Rund 2024, Petra & Ghattas 2019); other seed
-    operators remain pluggable via `MetricLBFGSOptimizer`'s `seed_operator` argument.
-
-    Args:
-        vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Vector to apply the seed operator
-            to.
-
-    Returns:
-        np.ndarray[tuple[int], np.dtype[np.float64]]: `vector`, unchanged.
-    """
-    return vector
 
 
 # ==================================================================================================
@@ -75,16 +45,16 @@ class CorrectionPair:
     r"""One correction pair $(s_i, y_i, \rho_i)$ of the limited-memory Hessian approximation.
 
     Attributes:
-        s (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement
+        state_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement
             $s_i = m_{i+1} - m_i$.
-        y (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient displacement
+        gradient_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient displacement
             $y_i = \nabla I(m_{i+1}) - \nabla I(m_i)$.
-        rho (float): $\rho_i = 1 / (s_i, y_i)$, computed once at insertion.
+        inner_product_reciprocal (float): $\rho_i = 1 / (s_i, y_i)$, computed once at insertion.
     """
 
-    s: np.ndarray[tuple[int], np.dtype[np.float64]]
-    y: np.ndarray[tuple[int], np.dtype[np.float64]]
-    rho: float
+    state_difference: np.ndarray[tuple[int], np.dtype[np.float64]]
+    gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]]
+    inner_product_reciprocal: float
 
 
 # ==================================================================================================
@@ -110,18 +80,26 @@ class CorrectionPairStore:
     # ----------------------------------------------------------------------------------------------
     def add(
         self,
-        s: np.ndarray[tuple[int], np.dtype[np.float64]],
-        y: np.ndarray[tuple[int], np.dtype[np.float64]],
-        rho: float,
+        state_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
+        gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
+        inner_product_reciprocal: float,
     ) -> None:
         r"""Add a new correction pair, evicting the oldest one if the store is full.
 
         Args:
-            s (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement $s_i$.
-            y (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient displacement $y_i$.
-            rho (float): $\rho_i = 1 / (s_i, y_i)$.
+            state_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement
+                $s_i$.
+            gradient_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient
+                displacement $y_i$.
+            inner_product_reciprocal (float): $\rho_i = 1 / (s_i, y_i)$.
         """
-        self._pairs.append(CorrectionPair(s=s, y=y, rho=rho))
+        self._pairs.append(
+            CorrectionPair(
+                state_difference=state_difference,
+                gradient_difference=gradient_difference,
+                inner_product_reciprocal=inner_product_reciprocal,
+            )
+        )
 
     # ----------------------------------------------------------------------------------------------
     def __iter__(self) -> Iterator[CorrectionPair]:
@@ -180,43 +158,45 @@ def two_loop_recursion(
     q = gradient.copy()
     etas: list[float] = []
     for pair in reversed(correction_pairs):
-        eta = pair.rho * inner_product(pair.s, q)
-        q = q - eta * pair.y
+        eta = pair.inner_product_reciprocal * inner_product(pair.state_difference, q)
+        q = q - eta * pair.gradient_difference
         etas.append(eta)
 
     r = seed_operator(q)
     for pair, eta in zip(correction_pairs, reversed(etas), strict=True):
-        zeta = pair.rho * inner_product(pair.y, r)
-        r = r + pair.s * (eta - zeta)
+        zeta = pair.inner_product_reciprocal * inner_product(pair.gradient_difference, r)
+        r = r + pair.state_difference * (eta - zeta)
 
     return -r
 
 
 # ==================================================================================================
 @dataclass
-class MetricLBFGSSettings:
-    r"""Settings for `MetricLBFGSOptimizer`.
+class CustomLBFGSSettings:
+    r"""Settings for `CustomLBFGSOptimizer`.
 
     The field constraints are validated on initialization.
 
     Attributes:
-        memory_size (int): Number of correction pairs to keep, $M$. Defaults to
-            `DEFAULT_MEMORY_SIZE`.
-        maximum_num_iterations (int): Maximum number of outer iterations. Defaults to
-            `DEFAULT_MAXIMUM_NUM_ITERATIONS`.
+        memory_size (int): Number of correction pairs to keep, $M$. Defaults to `10`, a widely
+            used, moderate choice within the standard range of 3 to 20 (Nocedal & Wright,
+            "Numerical Optimization", 2006, Sec. 7.2).
+        maximum_num_iterations (int): Maximum number of outer iterations. Defaults to `1000`, a
+            generic safeguard against non-termination; not tied to any specific problem scale.
         gradient_norm_tolerance (Real): Convergence tolerance on the gradient norm, evaluated in
-            the optimizer's inner-product space. Defaults to `DEFAULT_GRADIENT_NORM_TOLERANCE`.
+            the optimizer's inner-product space. Defaults to `1e-6`, a typical convergence
+            tolerance for double-precision optimization.
     """
 
-    memory_size: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MEMORY_SIZE
-    maximum_num_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MAXIMUM_NUM_ITERATIONS
-    gradient_norm_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_GRADIENT_NORM_TOLERANCE
+    memory_size: Annotated[int, Is[lambda x: x > 0]] = 10
+    maximum_num_iterations: Annotated[int, Is[lambda x: x > 0]] = 1000
+    gradient_norm_tolerance: Annotated[Real, Is[lambda x: x > 0]] = 1e-6
 
 
 # ==================================================================================================
 @dataclass(frozen=True)
-class _MetricLBFGSRawResult:
-    """Raw result of `MetricLBFGSOptimizer._run_impl`, mapped onto `OptimizationResult` by
+class _CustomLBFGSRawResult:
+    """Raw result of `CustomLBFGSOptimizer._run_impl`, mapped onto `OptimizationResult` by
     `_create_optimization_result`."""
 
     final_point: np.ndarray[tuple[int], np.dtype[np.float64]]
@@ -226,7 +206,7 @@ class _MetricLBFGSRawResult:
 
 
 # ==================================================================================================
-class MetricLBFGSOptimizer(BaseOptimizer):
+class CustomLBFGSOptimizer(BaseOptimizer):
     r"""L-BFGS with cautious updating, generalized to an arbitrary inner-product space.
 
     Implements the algorithm of `optimization.tex` (Algorithm 2: two-loop recursion, Armijo
@@ -248,7 +228,7 @@ class MetricLBFGSOptimizer(BaseOptimizer):
     backtracking steps and raises if none succeeds, since an unbounded loop could hang if
     `search_direction` is not a genuine descent direction due to numerical error. Termination is
     not specified in the notes; this class adds `maximum_num_iterations` and
-    `gradient_norm_tolerance` (Sec. `MetricLBFGSSettings`) as explicit stopping criteria.
+    `gradient_norm_tolerance` (Sec. `CustomLBFGSSettings`) as explicit stopping criteria.
 
     Attributes:
         requires_hessian (bool): Always `False`; this method does not use Hessian information.
@@ -259,22 +239,25 @@ class MetricLBFGSOptimizer(BaseOptimizer):
     # ----------------------------------------------------------------------------------------------
     def __init__(
         self,
-        settings: MetricLBFGSSettings,
+        settings: CustomLBFGSSettings,
         line_search: LineSearchStrategy,
         acceptance_strategy: CorrectionPairAcceptanceStrategy,
-        seed_operator: SeedOperator = identity_seed_operator,
+        seed_operator: SeedOperator = lambda vector: vector,
         logger: BaseLogger | None = None,
     ) -> None:
         r"""Initialize the optimizer.
 
         Args:
-            settings (MetricLBFGSSettings): Settings for the optimizer.
+            settings (CustomLBFGSSettings): Settings for the optimizer.
             line_search (LineSearch): Step-size selection strategy.
             acceptance_strategy (CorrectionPairAcceptanceStrategy): Correction-pair acceptance
                 policy.
             seed_operator (SeedOperator, optional): Initial inverse-Hessian approximation
-                $\mathbf{H}_k^0$ for the two-loop recursion. Defaults to
-                `identity_seed_operator`.
+                $\mathbf{H}_k^0$ for the two-loop recursion. Defaults to the identity,
+                $\mathbf{H}_k^0 = \mathbf{I}$: in a Cameron-Martin space induced by a Gaussian
+                prior's covariance, the prior term's Hessian with respect to the Cameron-Martin
+                inner product is exactly the identity, making this the natural "structured seed
+                matrix" choice (Mannel & Rund 2024, Petra & Ghattas 2019).
             logger (BaseLogger | None, optional): Logger for iteration-by-iteration progress
                 reports. Defaults to `None`.
         """
@@ -290,8 +273,8 @@ class MetricLBFGSOptimizer(BaseOptimizer):
         self,
         initial_guess: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
-        callback: Callable[..., None],
-    ) -> _MetricLBFGSRawResult:
+        callback: IterationCallback,
+    ) -> _CustomLBFGSRawResult:
         """Run the outer iteration: two-loop recursion for the direction, line search for the
         step, cautious updating for whether to store the new correction pair, until convergence or
         `maximum_num_iterations` is reached.
@@ -323,18 +306,29 @@ class MetricLBFGSOptimizer(BaseOptimizer):
             next_loss = line_search_result.loss
             next_gradient = gradient_function(next_point)
 
-            s = next_point - current_point
-            y = next_gradient - current_gradient
-            if self._acceptance_strategy.accept_update(s, y, current_gradient, model):
-                correction_pairs.add(s, y, rho=1.0 / inner_product(s, y))
+            state_difference = next_point - current_point
+            gradient_difference = next_gradient - current_gradient
+            pair_accepted = self._acceptance_strategy.accept_update(
+                state_difference, gradient_difference, current_gradient, model
+            )
+            if pair_accepted:
+                correction_pairs.add(
+                    state_difference,
+                    gradient_difference,
+                    inner_product_reciprocal=1.0
+                    / inner_product(state_difference, gradient_difference),
+                )
 
             current_point, current_loss, current_gradient = next_point, next_loss, next_gradient
             gradient_norm = model.evaluate_norm(current_gradient)
             iteration += 1
-            callback(current_point)
+            self._log_debug_iteration_detail(
+                iteration, line_search_result.step_size, pair_accepted
+            )
+            callback(current_loss, gradient_norm)
             converged = gradient_norm <= self._settings.gradient_norm_tolerance
 
-        return _MetricLBFGSRawResult(
+        return _CustomLBFGSRawResult(
             final_point=current_point,
             num_iterations=iteration,
             converged=converged,
@@ -342,9 +336,21 @@ class MetricLBFGSOptimizer(BaseOptimizer):
         )
 
     # ----------------------------------------------------------------------------------------------
+    def _log_debug_iteration_detail(
+        self, iteration: int, step_size: float, pair_accepted: bool
+    ) -> None:
+        """Log the step size taken and whether the resulting correction pair was accepted into the
+        limited-memory store, if a logger is attached."""
+        if self._logger is not None:
+            acceptance = "accepted" if pair_accepted else "rejected"
+            self._logger.debug(
+                f"Iteration {iteration}: step size {step_size:.3e}, correction pair {acceptance}."
+            )
+
+    # ----------------------------------------------------------------------------------------------
     @override
     def _create_optimization_result(
-        self, raw_result: _MetricLBFGSRawResult, history: OptimizationHistory
+        self, raw_result: _CustomLBFGSRawResult, history: OptimizationHistory
     ) -> OptimizationResult:
         """Map the raw iteration result and the recorded history onto `OptimizationResult`."""
         if raw_result.converged:

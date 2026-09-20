@@ -18,24 +18,6 @@ from typing import Annotated, override
 import numpy as np
 from beartype.vale import Is
 
-# Standard initialization for quasi-Newton line searches (`optimization.tex`, line 95): the
-# quasi-Newton direction itself already incorporates curvature information, so a full step is
-# usually accepted or nearly so.
-DEFAULT_INITIAL_STEP_SIZE = 1.0
-# Standard Armijo sufficient-decrease constant (Nocedal & Wright, "Numerical Optimization", 2006,
-# Sec. 3.1): a small value close to 0 accepts almost any decrease, which is typical practice for
-# quasi-Newton methods (as opposed to steepest descent, which needs a stricter tolerance).
-DEFAULT_SUFFICIENT_DECREASE_CONSTANT = 1e-4
-# Halving the step on each backtrack (`optimization.tex`, line 95, uses beta > 1 as a divisor),
-# the standard, simplest choice (Nocedal & Wright, "Numerical Optimization", 2006, Sec. 3.1).
-DEFAULT_BACKTRACKING_FACTOR = 2.0
-# With the defaults above, 50 backtracking steps shrink the step size to 2^-50 (~1e-15) before
-# giving up, comfortably below double-precision step sizes that could still be meaningful. Beyond
-# that, a further decrease cannot be represented reliably, indicating the search direction is
-# likely not a descent direction (e.g. due to numerical error), so the search should raise instead
-# of continuing to loop, unlike the notes' unbounded `while` loop (line 142-150).
-DEFAULT_MAX_BACKTRACKING_STEPS = 50
-
 
 # ==================================================================================================
 @dataclass(frozen=True)
@@ -103,22 +85,32 @@ class ArmijoBacktrackingLineSearchSettings:
     The field constraints are validated on initialization.
 
     Attributes:
-        initial_step_size (Real): Initial step size $\tau^{(0)}$. Defaults to
-            `DEFAULT_INITIAL_STEP_SIZE`.
+        initial_step_size (Real): Initial step size $\tau^{(0)}$. Defaults to `1.0`, the standard
+            initialization for quasi-Newton line searches (`optimization.tex`, line 95): the
+            quasi-Newton direction itself already incorporates curvature information, so a full
+            step is usually accepted or nearly so.
         sufficient_decrease_constant (Real): Armijo constant $c_1 \in (0, 1)$. Defaults to
-            `DEFAULT_SUFFICIENT_DECREASE_CONSTANT`.
+            `1e-4`, the standard Armijo sufficient-decrease constant (Nocedal & Wright, "Numerical
+            Optimization", 2006, Sec. 3.1): a small value close to 0 accepts almost any decrease,
+            which is typical practice for quasi-Newton methods (as opposed to steepest descent,
+            which needs a stricter tolerance).
         backtracking_factor (Real): Backtracking divisor $\beta > 1$;
-            $\tau^{(i+1)} = \tau^{(i)} / \beta$. Defaults to `DEFAULT_BACKTRACKING_FACTOR`.
+            $\tau^{(i+1)} = \tau^{(i)} / \beta$. Defaults to `2.0`, halving the step on each
+            backtrack (`optimization.tex`, line 95, uses beta > 1 as a divisor), the standard,
+            simplest choice (Nocedal & Wright, "Numerical Optimization", 2006, Sec. 3.1).
         max_backtracking_steps (int): Maximum number of backtracking steps before raising.
-            Defaults to `DEFAULT_MAX_BACKTRACKING_STEPS`.
+            Defaults to `50`: with the defaults above, 50 backtracking steps shrink the step size
+            to 2^-50 (~1e-15) before giving up, comfortably below double-precision step sizes that
+            could still be meaningful. Beyond that, a further decrease cannot be represented
+            reliably, indicating the search direction is likely not a descent direction (e.g. due
+            to numerical error), so the search should raise instead of continuing to loop, unlike
+            the notes' unbounded `while` loop (line 142-150).
     """
 
-    initial_step_size: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_INITIAL_STEP_SIZE
-    sufficient_decrease_constant: Annotated[Real, Is[lambda x: 0 < x < 1]] = (
-        DEFAULT_SUFFICIENT_DECREASE_CONSTANT
-    )
-    backtracking_factor: Annotated[Real, Is[lambda x: x > 1]] = DEFAULT_BACKTRACKING_FACTOR
-    max_backtracking_steps: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MAX_BACKTRACKING_STEPS
+    initial_step_size: Annotated[Real, Is[lambda x: x > 0]] = 1.0
+    sufficient_decrease_constant: Annotated[Real, Is[lambda x: 0 < x < 1]] = 1e-4
+    backtracking_factor: Annotated[Real, Is[lambda x: x > 1]] = 2.0
+    max_backtracking_steps: Annotated[int, Is[lambda x: x > 0]] = 50
 
 
 # ==================================================================================================

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import LBFGSSettings
+from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import ScipyLBFGSBSettings
 from tests.optimization import helpers
 
 QUADRATIC_DIM = 5
@@ -22,5 +22,5 @@ def quadratic_minimizer() -> np.ndarray:
 
 # --------------------------------------------------------------------------------------------------
 @pytest.fixture
-def lbfgs_settings() -> LBFGSSettings:
-    return helpers.default_lbfgs_settings()
+def scipy_lbfgs_b_settings() -> ScipyLBFGSBSettings:
+    return helpers.default_scipy_lbfgs_b_settings()

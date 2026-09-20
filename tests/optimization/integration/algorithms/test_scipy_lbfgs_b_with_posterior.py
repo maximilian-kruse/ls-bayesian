@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import LBFGSOptimizer, LBFGSSettings
+from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import (
+    ScipyLBFGSBOptimizer,
+    ScipyLBFGSBSettings,
+)
 from ls_bayesian.posterior import posterior
 from tests.optimization import helpers as optimization_helpers
 from tests.posterior import helpers as posterior_helpers
@@ -13,7 +16,7 @@ CONVERGENCE_ABSOLUTE_TOLERANCE = 1e-4
 
 # ==================================================================================================
 def test_lbfgs_converges_to_closed_form_map_of_linear_gaussian_posterior() -> None:
-    """Cross-subpackage wiring test: runs `LBFGSOptimizer` directly against a real
+    """Cross-subpackage wiring test: runs `ScipyLBFGSBOptimizer` directly against a real
     `LogPosterior`'s bound `evaluate_cost`/`evaluate_gradient` methods, with no adapter code,
     proving the typed-`Callable` objective contract works end-to-end. For a linear forward map and
     Gaussian likelihood and prior, the posterior is exactly quadratic, so the MAP point has a
@@ -43,7 +46,7 @@ def test_lbfgs_converges_to_closed_form_map_of_linear_gaussian_posterior() -> No
     )
     expected_map_point = np.linalg.solve(system_matrix, right_hand_side)
 
-    optimizer = LBFGSOptimizer(LBFGSSettings())
+    optimizer = ScipyLBFGSBOptimizer(ScipyLBFGSBSettings())
     model = optimization_helpers.LogPosteriorModel(log_posterior)
     result = optimizer.run(np.zeros_like(prior_mean_vector), model)
 

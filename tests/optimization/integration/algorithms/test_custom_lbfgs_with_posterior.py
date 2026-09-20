@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from ls_bayesian.optimization.algorithms.custom_lbfgs import (
-    MetricLBFGSOptimizer,
-    MetricLBFGSSettings,
+    CustomLBFGSOptimizer,
+    CustomLBFGSSettings,
 )
 from ls_bayesian.optimization.components.cautious_update import (
     CautiousUpdateSettings,
@@ -60,8 +60,8 @@ def test_metric_lbfgs_converges_to_closed_form_map_under_weighted_geometry() -> 
     )
     expected_map_point = np.linalg.solve(system_matrix, right_hand_side)
 
-    optimizer = MetricLBFGSOptimizer(
-        MetricLBFGSSettings(maximum_num_iterations=200, gradient_norm_tolerance=1e-8),
+    optimizer = CustomLBFGSOptimizer(
+        CustomLBFGSSettings(maximum_num_iterations=200, gradient_norm_tolerance=1e-8),
         ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
         CautiousUpdateStrategy(CautiousUpdateSettings()),
     )

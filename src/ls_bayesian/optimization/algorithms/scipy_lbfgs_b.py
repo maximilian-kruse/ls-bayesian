@@ -1,11 +1,10 @@
 """L-BFGS-B optimizer, wrapping `scipy.optimize.minimize`.
 
 Classes:
-    LBFGSSettings: Settings for the L-BFGS-B optimizer.
-    LBFGSOptimizer: L-BFGS-B optimizer.
+    ScipyLBFGSBSettings: Settings for the L-BFGS-B optimizer.
+    ScipyLBFGSBOptimizer: L-BFGS-B optimizer.
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from numbers import Real
 from typing import Annotated, override
@@ -18,51 +17,42 @@ from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.optimization.model import OptimizationModel
 from ls_bayesian.optimization.optimizer import (
     BaseOptimizer,
+    IterationCallback,
     OptimizationHistory,
     OptimizationResult,
 )
 
-# Defaults for `LBFGSSettings`, matching `scipy.optimize.minimize`'s own defaults for
-# `method="L-BFGS-B"` (`maxiter`, `ftol`, `gtol`, `maxls`), so that constructing `LBFGSSettings`
-# with no arguments reproduces scipy's out-of-the-box behavior.
-DEFAULT_MAXIMUM_NUM_ITERATIONS = 15000
-DEFAULT_RELATIVE_FUNCTION_TOLERANCE = float(np.finfo(np.float64).eps)
-DEFAULT_RELATIVE_GRADIENT_TOLERANCE = 1e-5
-DEFAULT_MAX_LINE_SEARCH_STEPS = 20
-
 
 # ==================================================================================================
 @dataclass
-class LBFGSSettings:
+class ScipyLBFGSBSettings:
     """Settings for the L-BFGS-B optimizer, passed to `scipy.optimize.minimize`.
 
     The field constraints are validated on initialization. Defaults reproduce
-    `scipy.optimize.minimize`'s own defaults for `method="L-BFGS-B"`.
+    `scipy.optimize.minimize`'s own defaults for `method="L-BFGS-B"` (`maxiter`, `ftol`, `gtol`,
+    `maxls`), so that constructing `ScipyLBFGSBSettings` with no arguments reproduces scipy's
+    out-of-the-box behavior.
 
     Attributes:
-        maximum_num_iterations (int): Maximum number of iterations. Defaults to
-            `DEFAULT_MAXIMUM_NUM_ITERATIONS`.
+        maximum_num_iterations (int): Maximum number of iterations. Defaults to `15000`.
         relative_function_tolerance (Real): Relative tolerance (`ftol`) on the loss decrease
-            between iterations for convergence. Defaults to
-            `DEFAULT_RELATIVE_FUNCTION_TOLERANCE`.
+            between iterations for convergence. Defaults to machine epsilon for `float64`.
         relative_gradient_tolerance (Real): Tolerance (`gtol`) on the (projected) gradient norm
-            for convergence. Defaults to `DEFAULT_RELATIVE_GRADIENT_TOLERANCE`.
+            for convergence. Defaults to `1e-5`.
         max_line_search_steps (int): Maximum number of line-search steps per iteration. Defaults
-            to `DEFAULT_MAX_LINE_SEARCH_STEPS`.
+            to `20`.
     """
 
-    maximum_num_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MAXIMUM_NUM_ITERATIONS
-    relative_function_tolerance: Annotated[Real, Is[lambda x: x > 0]] = (
-        DEFAULT_RELATIVE_FUNCTION_TOLERANCE
+    maximum_num_iterations: Annotated[int, Is[lambda x: x > 0]] = 15000
+    relative_function_tolerance: Annotated[Real, Is[lambda x: x > 0]] = float(
+        np.finfo(np.float64).eps
     )
-    relative_gradient_tolerance: Annotated[Real, Is[lambda x: x > 0]] = (
-        DEFAULT_RELATIVE_GRADIENT_TOLERANCE
-    )
-    max_line_search_steps: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_MAX_LINE_SEARCH_STEPS
+    relative_gradient_tolerance: Annotated[Real, Is[lambda x: x > 0]] = 1e-5
+    max_line_search_steps: Annotated[int, Is[lambda x: x > 0]] = 20
 
 
 # ==================================================================================================
-class LBFGSOptimizer(BaseOptimizer):
+class ScipyLBFGSBOptimizer(BaseOptimizer):
     """L-BFGS-B optimizer, wrapping `scipy.optimize.minimize(method="L-BFGS-B")`.
 
     A mature, well-tested quasi-Newton optimizer for the standard Euclidean geometry. For problems
@@ -77,11 +67,11 @@ class LBFGSOptimizer(BaseOptimizer):
     requires_hessian: bool = False
 
     # ----------------------------------------------------------------------------------------------
-    def __init__(self, settings: LBFGSSettings, logger: BaseLogger | None = None) -> None:
+    def __init__(self, settings: ScipyLBFGSBSettings, logger: BaseLogger | None = None) -> None:
         """Initialize the optimizer.
 
         Args:
-            settings (LBFGSSettings): Settings for the L-BFGS-B optimizer.
+            settings (ScipyLBFGSBSettings): Settings for the L-BFGS-B optimizer.
             logger (BaseLogger | None, optional): Logger for iteration-by-iteration progress
                 reports. Defaults to `None`.
         """
@@ -94,13 +84,22 @@ class LBFGSOptimizer(BaseOptimizer):
         self,
         initial_guess: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
-        callback: Callable[..., None],
+        callback: IterationCallback,
     ) -> spo.OptimizeResult:
         """Call `scipy.optimize.minimize(method="L-BFGS-B")`.
 
         `model.evaluate_hessian_vector_product` and `model.evaluate_inner_product` are never
         called: L-BFGS-B only requires gradient information, and scipy's implementation is
         hardcoded to the Euclidean inner product.
+
+        scipy's own callback reports the loss of each accepted iterate directly (via the
+        `intermediate_result.fun` convention, see `scipy.optimize.minimize`'s `callback`
+        parameter), but not the gradient there. `latest_gradient_norm` bridges that gap: `jac`
+        caches the norm of whatever gradient it last computed, which -- since scipy always
+        evaluates `fun`/`jac` together at a candidate point before deciding to accept it as the
+        next iterate -- is exactly the gradient norm at the point scipy reports through the
+        callback. This cache is not itself a record; only `callback` (the run's `IterationCallback`,
+        invoked from `report_iteration`) writes into the run's history.
         """
         options = {
             "maxiter": self._settings.maximum_num_iterations,
@@ -108,12 +107,27 @@ class LBFGSOptimizer(BaseOptimizer):
             "gtol": self._settings.relative_gradient_tolerance,
             "maxls": self._settings.max_line_search_steps,
         }
+        latest_gradient_norm = np.nan
+
+        # cache gradient to avoid extra evaluation for reporting
+        def evaluate_gradient_and_cache_norm(
+            parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
+        ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+            nonlocal latest_gradient_norm
+            gradient = model.evaluate_gradient(parameter_vector)
+            latest_gradient_norm = model.evaluate_norm(gradient)
+            return gradient
+
+        # Custom callback with latest cached gradient
+        def report_iteration(intermediate_result: spo.OptimizeResult) -> None:
+            callback(float(intermediate_result.fun), latest_gradient_norm)
+
         return spo.minimize(
             fun=model.evaluate_cost,
             x0=initial_guess,
-            jac=model.evaluate_gradient,
+            jac=evaluate_gradient_and_cache_norm,
             method="L-BFGS-B",
-            callback=callback,
+            callback=report_iteration,
             options=options,
         )
 

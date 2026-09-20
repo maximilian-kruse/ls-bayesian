@@ -2,7 +2,10 @@ import numpy as np
 import pytest
 from beartype.roar import BeartypeCallHintViolation
 
-from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import LBFGSOptimizer, LBFGSSettings
+from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import (
+    ScipyLBFGSBOptimizer,
+    ScipyLBFGSBSettings,
+)
 from tests.optimization import helpers
 
 pytestmark = pytest.mark.unit
@@ -12,9 +15,11 @@ CONVERGENCE_ABSOLUTE_TOLERANCE = 1e-4
 
 # ==================================================================================================
 def test_converges_to_quadratic_minimizer(
-    quadratic_matrix: np.ndarray, quadratic_minimizer: np.ndarray, lbfgs_settings: LBFGSSettings
+    quadratic_matrix: np.ndarray,
+    quadratic_minimizer: np.ndarray,
+    scipy_lbfgs_b_settings: ScipyLBFGSBSettings,
 ) -> None:
-    optimizer = LBFGSOptimizer(lbfgs_settings)
+    optimizer = ScipyLBFGSBOptimizer(scipy_lbfgs_b_settings)
     model = helpers.QuadraticModel(quadratic_matrix, quadratic_minimizer)
 
     for seed in range(3):
@@ -26,12 +31,15 @@ def test_converges_to_quadratic_minimizer(
         np.testing.assert_allclose(
             result.result, quadratic_minimizer, atol=CONVERGENCE_ABSOLUTE_TOLERANCE
         )
-        assert result.gradient_norm_history[-1] < lbfgs_settings.relative_gradient_tolerance * 10
+        assert (
+            result.gradient_norm_history[-1]
+            < scipy_lbfgs_b_settings.relative_gradient_tolerance * 10
+        )
 
 
 # --------------------------------------------------------------------------------------------------
-def test_converges_on_rosenbrock(lbfgs_settings: LBFGSSettings) -> None:
-    optimizer = LBFGSOptimizer(lbfgs_settings)
+def test_converges_on_rosenbrock(scipy_lbfgs_b_settings: ScipyLBFGSBSettings) -> None:
+    optimizer = ScipyLBFGSBOptimizer(scipy_lbfgs_b_settings)
     initial_guess = np.array([-1.2, 1.0, -1.0, 1.5])
     model = helpers.RosenbrockModel()
 
@@ -48,17 +56,20 @@ def test_converges_on_rosenbrock(lbfgs_settings: LBFGSSettings) -> None:
 # --------------------------------------------------------------------------------------------------
 def test_settings_reject_non_positive_maximum_num_iterations() -> None:
     with pytest.raises(BeartypeCallHintViolation):
-        LBFGSSettings(maximum_num_iterations=0)
+        ScipyLBFGSBSettings(maximum_num_iterations=0)
 
 
 # --------------------------------------------------------------------------------------------------
-def test_history_lengths_are_consistent_with_num_iterations(
-    quadratic_matrix: np.ndarray, quadratic_minimizer: np.ndarray, lbfgs_settings: LBFGSSettings
+def test_history_lengths_match_num_iterations(
+    quadratic_matrix: np.ndarray,
+    quadratic_minimizer: np.ndarray,
+    scipy_lbfgs_b_settings: ScipyLBFGSBSettings,
 ) -> None:
-    optimizer = LBFGSOptimizer(lbfgs_settings)
+    """One history entry per accepted iteration, not per internal `fun`/`jac` evaluation."""
+    optimizer = ScipyLBFGSBOptimizer(scipy_lbfgs_b_settings)
     model = helpers.QuadraticModel(quadratic_matrix, quadratic_minimizer)
 
     result = optimizer.run(np.zeros_like(quadratic_minimizer), model)
 
-    assert result.loss_history.shape[0] >= result.num_iterations
-    assert result.gradient_norm_history.shape[0] >= result.num_iterations
+    assert result.loss_history.shape[0] == result.num_iterations
+    assert result.gradient_norm_history.shape[0] == result.num_iterations

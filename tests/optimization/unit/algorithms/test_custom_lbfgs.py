@@ -3,9 +3,8 @@ import pytest
 
 from ls_bayesian.optimization.algorithms.custom_lbfgs import (
     CorrectionPairStore,
-    MetricLBFGSOptimizer,
-    MetricLBFGSSettings,
-    identity_seed_operator,
+    CustomLBFGSOptimizer,
+    CustomLBFGSSettings,
     two_loop_recursion,
 )
 from ls_bayesian.optimization.components.cautious_update import (
@@ -23,9 +22,9 @@ pytestmark = pytest.mark.unit
 CONVERGENCE_ABSOLUTE_TOLERANCE = 1e-3
 
 
-def _default_optimizer(settings: MetricLBFGSSettings | None = None) -> MetricLBFGSOptimizer:
-    return MetricLBFGSOptimizer(
-        settings or MetricLBFGSSettings(),
+def _default_optimizer(settings: CustomLBFGSSettings | None = None) -> CustomLBFGSOptimizer:
+    return CustomLBFGSOptimizer(
+        settings or CustomLBFGSSettings(),
         ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
         CautiousUpdateStrategy(CautiousUpdateSettings()),
     )
@@ -34,22 +33,22 @@ def _default_optimizer(settings: MetricLBFGSSettings | None = None) -> MetricLBF
 # ==================================================================================================
 def test_store_evicts_oldest_beyond_memory_size() -> None:
     store = CorrectionPairStore(memory_size=2)
-    store.add(np.array([1.0]), np.array([1.0]), rho=1.0)
-    store.add(np.array([2.0]), np.array([2.0]), rho=2.0)
-    store.add(np.array([3.0]), np.array([3.0]), rho=3.0)
+    store.add(np.array([1.0]), np.array([1.0]), inner_product_reciprocal=1.0)
+    store.add(np.array([2.0]), np.array([2.0]), inner_product_reciprocal=2.0)
+    store.add(np.array([3.0]), np.array([3.0]), inner_product_reciprocal=3.0)
 
     assert len(store) == 2
-    assert [pair.rho for pair in store] == [2.0, 3.0]
+    assert [pair.inner_product_reciprocal for pair in store] == [2.0, 3.0]
 
 
 # --------------------------------------------------------------------------------------------------
 def test_store_iterates_in_both_documented_orders() -> None:
     store = CorrectionPairStore(memory_size=3)
-    store.add(np.array([1.0]), np.array([1.0]), rho=1.0)
-    store.add(np.array([2.0]), np.array([2.0]), rho=2.0)
+    store.add(np.array([1.0]), np.array([1.0]), inner_product_reciprocal=1.0)
+    store.add(np.array([2.0]), np.array([2.0]), inner_product_reciprocal=2.0)
 
-    assert [pair.rho for pair in store] == [1.0, 2.0]
-    assert [pair.rho for pair in reversed(store)] == [2.0, 1.0]
+    assert [pair.inner_product_reciprocal for pair in store] == [1.0, 2.0]
+    assert [pair.inner_product_reciprocal for pair in reversed(store)] == [2.0, 1.0]
 
 
 # ==================================================================================================
@@ -58,7 +57,7 @@ def test_two_loop_recursion_with_no_pairs_is_steepest_descent() -> None:
     gradient = np.array([1.0, -2.0, 3.0])
     model = helpers.ZeroModel()
 
-    direction = two_loop_recursion(gradient, store, model, identity_seed_operator)
+    direction = two_loop_recursion(gradient, store, model, lambda vector: vector)
 
     np.testing.assert_allclose(direction, -gradient)
 
@@ -71,19 +70,23 @@ def test_two_loop_recursion_matches_closed_form_bfgs_update_with_one_pair() -> N
     applied to the gradient; this test checks that equivalence directly against the closed-form
     matrix, in the Euclidean inner product for an independently-computable reference."""
     model = helpers.ZeroModel()
-    s = np.array([1.0, 0.5])
-    y = np.array([0.3, 0.8])
-    rho = 1.0 / np.dot(s, y)
+    state_difference = np.array([1.0, 0.5])
+    gradient_difference = np.array([0.3, 0.8])
+    inner_product_reciprocal = 1.0 / np.dot(state_difference, gradient_difference)
     store = CorrectionPairStore(memory_size=1)
-    store.add(s, y, rho=rho)
+    store.add(
+        state_difference, gradient_difference, inner_product_reciprocal=inner_product_reciprocal
+    )
     gradient = np.array([0.2, -0.4])
 
-    direction = two_loop_recursion(gradient, store, model, identity_seed_operator)
+    direction = two_loop_recursion(gradient, store, model, lambda vector: vector)
 
     identity = np.eye(2)
-    updated_inverse_hessian = (identity - rho * np.outer(s, y)) @ (
-        identity - rho * np.outer(y, s)
-    ) + rho * np.outer(s, s)
+    updated_inverse_hessian = (
+        identity - inner_product_reciprocal * np.outer(state_difference, gradient_difference)
+    ) @ (
+        identity - inner_product_reciprocal * np.outer(gradient_difference, state_difference)
+    ) + inner_product_reciprocal * np.outer(state_difference, state_difference)
     expected_direction = -(updated_inverse_hessian @ gradient)
     np.testing.assert_allclose(direction, expected_direction)
 
@@ -97,7 +100,7 @@ def test_converges_to_quadratic_minimizer_under_weighted_inner_product(
     `helpers.QuadraticModel`'s docstring): this checks the optimizer actually uses the model's
     non-Euclidean geometry rather than silently falling back to a Euclidean one."""
     optimizer = _default_optimizer(
-        MetricLBFGSSettings(maximum_num_iterations=200, gradient_norm_tolerance=1e-8)
+        CustomLBFGSSettings(maximum_num_iterations=200, gradient_norm_tolerance=1e-8)
     )
     model = helpers.QuadraticModel(
         quadratic_matrix, quadratic_minimizer, inner_product_matrix=quadratic_matrix
@@ -114,10 +117,10 @@ def test_converges_to_quadratic_minimizer_under_weighted_inner_product(
 
 # --------------------------------------------------------------------------------------------------
 def test_converges_on_rosenbrock_with_euclidean_space() -> None:
-    """Cross-check against `LBFGSOptimizer` on the same problem: with the default (Euclidean)
+    """Cross-check against `ScipyLBFGSBOptimizer` on the same problem: with the default (Euclidean)
     model, this backend should also converge to the known minimizer."""
     optimizer = _default_optimizer(
-        MetricLBFGSSettings(maximum_num_iterations=500, gradient_norm_tolerance=1e-6)
+        CustomLBFGSSettings(maximum_num_iterations=500, gradient_norm_tolerance=1e-6)
     )
     initial_guess = np.array([-1.2, 1.0, -1.0, 1.5])
     model = helpers.RosenbrockModel()
@@ -133,7 +136,7 @@ def test_converges_on_rosenbrock_with_euclidean_space() -> None:
 # --------------------------------------------------------------------------------------------------
 def test_stops_at_maximum_num_iterations_when_not_converged() -> None:
     optimizer = _default_optimizer(
-        MetricLBFGSSettings(maximum_num_iterations=1, gradient_norm_tolerance=1e-12)
+        CustomLBFGSSettings(maximum_num_iterations=1, gradient_norm_tolerance=1e-12)
     )
     initial_guess = np.array([-1.2, 1.0])
     model = helpers.RosenbrockModel()
@@ -146,7 +149,7 @@ def test_stops_at_maximum_num_iterations_when_not_converged() -> None:
 
 # --------------------------------------------------------------------------------------------------
 def test_zero_iterations_when_initial_guess_already_converged() -> None:
-    optimizer = _default_optimizer(MetricLBFGSSettings(gradient_norm_tolerance=1e-6))
+    optimizer = _default_optimizer(CustomLBFGSSettings(gradient_norm_tolerance=1e-6))
     minimizer = np.zeros(2)
     model = helpers.QuadraticModel(np.eye(2), minimizer)
 

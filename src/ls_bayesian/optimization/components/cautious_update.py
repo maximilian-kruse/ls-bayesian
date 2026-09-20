@@ -18,14 +18,6 @@ from beartype.vale import Is
 
 from ls_bayesian.optimization.model import OptimizationModel
 
-# A small epsilon, consistent with the cautious-update literature (Li & Fukushima, "A globally
-# convergent BFGS method for nonconvex minimization without line search", 2001), keeps the
-# condition close to the standard curvature condition ((y, s) > 0) while still guarding against
-# near-degenerate pairs; alpha=1 is the simplest exponent used in that condition. These are
-# reasonable starting defaults, not universal optima; problem-specific tuning may be warranted.
-DEFAULT_EPSILON = 1e-6
-DEFAULT_ALPHA = 1.0
-
 
 # ==================================================================================================
 class CorrectionPairAcceptanceStrategy(ABC):
@@ -39,16 +31,18 @@ class CorrectionPairAcceptanceStrategy(ABC):
     @abstractmethod
     def accept_update(
         self,
-        s: np.ndarray[tuple[int], np.dtype[np.float64]],
-        y: np.ndarray[tuple[int], np.dtype[np.float64]],
+        state_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
+        gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
         gradient: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
     ) -> bool:
         r"""Decide whether a correction pair should be stored.
 
         Args:
-            s (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement $s$.
-            y (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient displacement $y$.
+            state_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Iterate displacement
+                $s$.
+            gradient_difference (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient
+                displacement $y$.
             gradient (np.ndarray[tuple[int], np.dtype[np.float64]]): Gradient $g$ the displacement
                 was taken from.
             model (OptimizationModel): Model whose `evaluate_inner_product`/`evaluate_norm` the
@@ -67,8 +61,8 @@ class AlwaysAcceptStrategy(CorrectionPairAcceptanceStrategy):
     @override
     def accept_update(
         self,
-        s: np.ndarray[tuple[int], np.dtype[np.float64]],
-        y: np.ndarray[tuple[int], np.dtype[np.float64]],
+        state_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
+        gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
         gradient: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
     ) -> bool:
@@ -85,12 +79,19 @@ class CautiousUpdateSettings:
 
     Attributes:
         epsilon (Real): Threshold scale $\epsilon \geq 0$. `epsilon = 0` reduces the condition to
-            the standard curvature condition $(y, s) > 0$. Defaults to `DEFAULT_EPSILON`.
-        alpha (Real): Exponent $\alpha > 0$ on the gradient norm. Defaults to `DEFAULT_ALPHA`.
+            the standard curvature condition $(y, s) > 0$. Defaults to `1e-6`, consistent with the
+            cautious-update literature (Li & Fukushima, "A globally convergent BFGS method for
+            nonconvex minimization without line search", 2001): small enough to keep the condition
+            close to the standard curvature condition while still guarding against near-degenerate
+            pairs. A reasonable starting default, not a universal optimum; problem-specific tuning
+            may be warranted.
+        alpha (Real): Exponent $\alpha > 0$ on the gradient norm. Defaults to `1.0`, the simplest
+            exponent used in the cautious-update condition (Li & Fukushima, 2001). A reasonable
+            starting default, not a universal optimum; problem-specific tuning may be warranted.
     """
 
-    epsilon: Annotated[Real, Is[lambda x: x >= 0]] = DEFAULT_EPSILON
-    alpha: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_ALPHA
+    epsilon: Annotated[Real, Is[lambda x: x >= 0]] = 1e-6
+    alpha: Annotated[Real, Is[lambda x: x > 0]] = 1.0
 
 
 # ==================================================================================================
@@ -122,16 +123,18 @@ class CautiousUpdateStrategy(CorrectionPairAcceptanceStrategy):
     @override
     def accept_update(
         self,
-        s: np.ndarray[tuple[int], np.dtype[np.float64]],
-        y: np.ndarray[tuple[int], np.dtype[np.float64]],
+        state_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
+        gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]],
         gradient: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
     ) -> bool:
         """Evaluate the cautious update condition for a correction pair."""
         inner_product = model.evaluate_inner_product
-        s_norm_squared = inner_product(s, s)
-        if s_norm_squared == 0.0:
+        state_difference_norm_squared = inner_product(state_difference, state_difference)
+        if state_difference_norm_squared == 0.0:
             return False
         gradient_norm = model.evaluate_norm(gradient)
-        curvature_ratio = inner_product(y, s) / s_norm_squared
+        curvature_ratio = (
+            inner_product(gradient_difference, state_difference) / state_difference_norm_squared
+        )
         return curvature_ratio >= self._settings.epsilon * gradient_norm**self._settings.alpha

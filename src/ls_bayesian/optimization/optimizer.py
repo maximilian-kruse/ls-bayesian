@@ -8,18 +8,25 @@ Classes:
 Functions:
     log_header: Log the column header for iteration progress reports.
     log_iteration: Log one row of iteration progress.
+    log_final_outcome: Log the final convergence status and termination message of a run.
 """
 
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, override
+from typing import Any
 
 import numpy as np
 
 from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.optimization.model import OptimizationModel
+
+# Invoked once per accepted iteration as callback(loss, gradient_norm); `BaseOptimizer.run` binds
+# it to a closure that records both values into the run's `OptimizationHistory` and logs the
+# iteration. `_run_impl` implementations must pass values already computed as part of the
+# iteration, not re-evaluate the model for this purpose.
+type IterationCallback = Callable[[float, float], None]
 
 # Column widths for the progress table logged by `log_header`/`log_iteration`. Wide enough to fit
 # the longest header ("Grad. norm") and typical numeric values in scientific notation (e.g.
@@ -38,11 +45,12 @@ class OptimizationResult:
     Attributes:
         result (np.ndarray[tuple[int], np.dtype[np.float64]]): Minimizer found, or the best
             iterate if the run did not converge.
-        loss_history (np.ndarray[tuple[int], np.dtype[np.float64]]): Loss value at every
-            evaluation of the loss function, in call order.
+        loss_history (np.ndarray[tuple[int], np.dtype[np.float64]]): Loss value at every accepted
+            iterate, in iteration order (one value per iteration, not per internal model
+            evaluation, e.g. line-search trials are not included).
         gradient_norm_history (np.ndarray[tuple[int], np.dtype[np.float64]]): Norm of the
-            gradient at every evaluation of the gradient function, in call order, evaluated via
-            the model's `evaluate_norm`.
+            gradient at every accepted iterate, in iteration order, evaluated via the model's
+            `evaluate_norm`.
         num_iterations (int): Number of iterations performed by the backend.
         success (bool): Whether the backend reports convergence.
         status_message (str): Human-readable termination message from the backend.
@@ -61,8 +69,8 @@ class OptimizationHistory:
     """Records loss and gradient-norm values evaluated during an optimization run.
 
     Values are appended in the order they are recorded. The class does not compute anything and
-    does not know when it is called from; callers (the optimization driver, via
-    `_ModelWithRecords`) decide what to record and when. This mirrors
+    does not know when it is called from; callers (the optimization driver, via the
+    per-iteration `IterationCallback`) decide what to record and when. This mirrors
     [`EvaluationCache`][ls_bayesian.posterior.cache.EvaluationCache]'s design: recording is an
     explicit, single-purpose side effect isolated in its own component, rather than a hidden
     mutation of the driver's own state.
@@ -167,6 +175,24 @@ def log_iteration(
 
 
 # ==================================================================================================
+def log_final_outcome(logger: BaseLogger | None, result: OptimizationResult) -> None:
+    """Log the final convergence status and termination message of a completed run.
+
+    Args:
+        logger (BaseLogger | None): Logger to report to. No-op if `None`.
+        result (OptimizationResult): Outcome of the run.
+    """
+    if logger is None:
+        return
+    outcome = "Converged" if result.success else "Did not converge"
+    message = f"{outcome} after {result.num_iterations} iterations: {result.status_message}"
+    if result.success:
+        logger.info(message)
+    else:
+        logger.warning(message)
+
+
+# ==================================================================================================
 class BaseOptimizer(ABC):
     """ABC template-method driver for gradient-based optimization backends.
 
@@ -177,12 +203,16 @@ class BaseOptimizer(ABC):
     [`OptimizationResult`][ls_bayesian.optimization.optimizer.OptimizationResult]). This base
     class owns everything that is common across backends: input validation, progress
     instrumentation via
-    [`OptimizationHistory`][ls_bayesian.optimization.optimizer.OptimizationHistory], and
-    iteration-by-iteration reporting via `log_header`/`log_iteration` to an optional
-    [`BaseLogger`][ls_bayesian.common.logging.BaseLogger]. `_run_impl` receives a
-    `_ModelWithRecords`-wrapped model, so every `evaluate_cost`/`evaluate_gradient` call a
-    backend makes on it is transparently recorded, with gradient norms always taken via the
-    model's own `evaluate_norm`.
+    [`OptimizationHistory`][ls_bayesian.optimization.optimizer.OptimizationHistory],
+    iteration-by-iteration reporting via `log_header`/`log_iteration`, and final-outcome reporting
+    via `log_final_outcome` (`info` on convergence, `warning` otherwise), all to an optional
+    [`BaseLogger`][ls_bayesian.common.logging.BaseLogger]. `_run_impl` receives the model
+    unwrapped: evaluating `model.evaluate_cost`/`evaluate_gradient` never records anything.
+    Instead, `_run_impl` must call the `IterationCallback` it is given exactly once per accepted
+    iteration, with the loss and gradient norm at the new iterate (typically values it already
+    computed as part of the iteration, not obtained by evaluating the model again). `run` binds
+    that callback to a closure which records both values into the history and logs the
+    iteration.
 
     Methods:
         run: Run the optimizer from an initial guess.
@@ -234,32 +264,22 @@ class BaseOptimizer(ABC):
         self._validate_initial_guess(initial_guess)
 
         history = OptimizationHistory()
-        model_with_records = _ModelWithRecords(model, history)
-
         start_time = time.monotonic()
         iteration_count = 0
         log_header(self._logger)
 
-        def callback(*_: Any) -> None:
+        def callback(loss: float, gradient_norm: float) -> None:
             nonlocal iteration_count
             iteration_count += 1
+            history.record_loss(loss)
+            history.record_gradient_norm(gradient_norm)
             elapsed_time_seconds = time.monotonic() - start_time
-            latest_loss = history.loss_history[-1] if history.loss_history.size > 0 else np.nan
-            latest_gradient_norm = (
-                history.gradient_norm_history[-1]
-                if history.gradient_norm_history.size > 0
-                else np.nan
-            )
-            log_iteration(
-                self._logger,
-                iteration_count,
-                elapsed_time_seconds,
-                latest_loss,
-                latest_gradient_norm,
-            )
+            log_iteration(self._logger, iteration_count, elapsed_time_seconds, loss, gradient_norm)
 
-        raw_result = self._run_impl(initial_guess, model_with_records, callback)
-        return self._create_optimization_result(raw_result, history)
+        raw_result = self._run_impl(initial_guess, model, callback)
+        result = self._create_optimization_result(raw_result, history)
+        log_final_outcome(self._logger, result)
+        return result
 
     # ----------------------------------------------------------------------------------------------
     @abstractmethod
@@ -267,16 +287,18 @@ class BaseOptimizer(ABC):
         self,
         initial_guess: np.ndarray[tuple[int], np.dtype[np.float64]],
         model: OptimizationModel,
-        callback: Callable[..., None],
+        callback: IterationCallback,
     ) -> Any:
         """Run the backend-specific minimization, returning its raw, backend-specific result.
 
         Args:
             initial_guess (np.ndarray[tuple[int], np.dtype[np.float64]]): Starting point.
-            model (OptimizationModel): Objective to minimize; `evaluate_cost`/`evaluate_gradient`
-                calls are recorded into the run's history.
-            callback (Callable[..., None]): Callback to invoke once per iteration, with any
-                arguments the backend passes it; records timing and logs progress.
+            model (OptimizationModel): Objective to minimize. Evaluating
+                `evaluate_cost`/`evaluate_gradient` never records anything by itself.
+            callback (IterationCallback): Callback to invoke exactly once per accepted iteration,
+                as `callback(loss, gradient_norm)`; records both values into the run's history and
+                logs progress. Implementations must pass values already computed as part of the
+                iteration rather than evaluating the model again for this purpose.
 
         Returns:
             Any: Backend-specific raw result, consumed by `_create_optimization_result`.
@@ -309,64 +331,3 @@ class BaseOptimizer(ABC):
             )
         if not np.all(np.isfinite(initial_guess)):
             raise ValueError("initial_guess must contain only finite values.")
-
-
-# ==================================================================================================
-class _ModelWithRecords(OptimizationModel):
-    """Wraps a model so each `evaluate_cost`/`evaluate_gradient` call is recorded into a history.
-
-    `evaluate_hessian_vector_product`, `evaluate_inner_product` and `evaluate_norm` are delegated
-    to the wrapped model unchanged.
-    """
-
-    # ----------------------------------------------------------------------------------------------
-    def __init__(self, model: OptimizationModel, history: OptimizationHistory) -> None:
-        """Initialize the wrapper.
-
-        Args:
-            model (OptimizationModel): Model to wrap.
-            history (OptimizationHistory): History to record evaluations into.
-        """
-        self._model = model
-        self._history = history
-
-    # ----------------------------------------------------------------------------------------------
-    @override
-    def evaluate_cost(
-        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> float:
-        value = self._model.evaluate_cost(parameter_vector)
-        self._history.record_loss(float(value))
-        return value
-
-    # ----------------------------------------------------------------------------------------------
-    @override
-    def evaluate_gradient(
-        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-        gradient = self._model.evaluate_gradient(parameter_vector)
-        self._history.record_gradient_norm(self._model.evaluate_norm(gradient))
-        return gradient
-
-    # ----------------------------------------------------------------------------------------------
-    @override
-    def evaluate_hessian_vector_product(
-        self,
-        parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
-        direction_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
-    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-        return self._model.evaluate_hessian_vector_product(parameter_vector, direction_vector)
-
-    # ----------------------------------------------------------------------------------------------
-    @override
-    def evaluate_inner_product(
-        self,
-        first_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
-        second_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
-    ) -> float:
-        return self._model.evaluate_inner_product(first_vector, second_vector)
-
-    # ----------------------------------------------------------------------------------------------
-    @override
-    def evaluate_norm(self, vector: np.ndarray[tuple[int], np.dtype[np.float64]]) -> float:
-        return self._model.evaluate_norm(vector)
