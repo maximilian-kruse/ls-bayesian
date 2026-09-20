@@ -70,8 +70,9 @@ class BaseLogger:
     """Logger writing prefixed messages to the console and/or a log file.
 
     Every instance owns a separate, non-propagating Python logger, so that instances with different
-    prefixes and output channels do not interfere with each other or with the root logger. All
-    levels, including debug messages, are emitted.
+    prefixes and output channels do not interfere with each other or with the root logger. The log
+    file, if any, receives all levels including debug messages; the console only receives info
+    level and above.
 
     The logger holds an open log file until it is closed, either explicitly via
     [`close`][ls_bayesian.common.logging.BaseLogger.close], by using it as a context manager, or
@@ -105,7 +106,7 @@ class BaseLogger:
 
         if logger_settings.print_to_console:
             console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.DEBUG)
+            console_handler.setLevel(logging.INFO)
             console_handler.setFormatter(formatter)
             self._pylogger.addHandler(console_handler)
 
