@@ -14,7 +14,7 @@ _DENSE_LINALG_RTOL = 1e-9
 
 
 # ==================================================================================================
-def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_preconditioner() -> None:
+def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_precond() -> None:
     """Detailed-balance check with a preconditioner genuinely different from the prior covariance
     (not merely a rescaling): this is the case `MALAAlgorithm` cannot handle and that this class
     exists to cover."""
@@ -23,9 +23,7 @@ def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_prec
     covariance = helpers.random_spd_matrix(rng, dim)
     precision = np.linalg.inv(covariance)
     preconditioner_covariance = helpers.random_spd_matrix(rng, dim)
-    preconditioner = helpers.DenseGaussianMeasure(
-        np.zeros(dim), preconditioner_covariance, seed=21
-    )
+    preconditioner = helpers.DenseGaussianMeasure(np.zeros(dim), preconditioner_covariance, seed=21)
     reference = helpers.DenseGaussianMeasure(np.zeros(dim), covariance, seed=22)
     hessian = helpers.random_spd_matrix(rng, dim)
     minimizer = rng.standard_normal(dim)
@@ -42,7 +40,6 @@ def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_prec
             0.5 * state @ precision @ state
         )
 
-    rho = (2 - step_width) / (2 + step_width)
     sqrt_one_minus_rho_squared = np.sqrt(8 * step_width) / (2 + step_width)
     transition_covariance = sqrt_one_minus_rho_squared**2 * preconditioner_covariance
     transition_precision = np.linalg.inv(transition_covariance)

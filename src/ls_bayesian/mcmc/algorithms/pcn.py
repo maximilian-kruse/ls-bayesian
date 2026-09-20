@@ -136,12 +136,14 @@ class PCNAlgorithm(MCMCAlgorithm):
         proposal: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> float:
         if self._current_cache is None:
-            potential_current = self._evaluate_generalized_potential(current_state)
-        else:
-            potential_current = self._current_cache.generalized_potential
+            self._current_cache = _PCNStateCache(
+                generalized_potential=self._evaluate_generalized_potential(current_state)
+            )
         potential_proposal = self._evaluate_generalized_potential(proposal)
         self._pending_proposal_cache = _PCNStateCache(generalized_potential=potential_proposal)
-        return float(min(1.0, np.exp(potential_current - potential_proposal)))
+        return float(
+            min(1.0, np.exp(self._current_cache.generalized_potential - potential_proposal))
+        )
 
     # ----------------------------------------------------------------------------------------------
     @override

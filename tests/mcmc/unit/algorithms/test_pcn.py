@@ -13,9 +13,7 @@ _DENSE_LINALG_RTOL = 1e-9
 
 
 # ==================================================================================================
-def test_acceptance_probability_matches_exact_gaussian_transition_density_ratio_with_nontrivial_correction() -> (
-    None
-):
+def test_acceptance_probability_matches_exact_density_ratio_with_nontrivial_correction() -> None:
     """Detailed-balance check treating `proposal_measure` (with a genuine nonzero `evaluate_cost`
     correction) as the base comparison measure directly: the classical pCN kernel drawn from
     `proposal_measure` is exactly reversible with respect to it, so `Phi_nu(u) - Phi_nu(v)` must be
@@ -88,26 +86,26 @@ def test_generalized_potential_reduces_to_target_cost_when_correction_is_zero() 
 
 
 # ==================================================================================================
-def test_current_potential_not_recomputed_after_an_accepted_step() -> None:
-    """`_PCNStateCache` is only ever populated by `_update_cache` on acceptance (unlike MALA/PMALA,
-    which also cache a rejected-and-persisted current state) -- exactly the reuse
-    `algorithm.py`'s `_update_cache` docstring documents, no more. This locks in that precise,
-    weaker contract so a future change is a deliberate decision, not an accidental regression."""
+def test_target_cost_evaluated_once_per_step_regardless_of_accept_reject_history() -> None:
+    """Same caching contract as `MALAAlgorithm`/`PMALAAlgorithm`: N manually-driven steps must
+    evaluate the target's cost exactly N+1 times, never re-evaluating a state already in cache --
+    including across a rejected step, where the (unchanged) current state's potential must be
+    reused rather than recomputed."""
     setup = helpers.create_quadratic_gaussian_setup(seed=80)
     counting_target = helpers.CallCountingTargetMeasure(setup.target)
     algorithm_under_test = PCNAlgorithm(counting_target, setup.reference, step_width=0.5)
     rng = np.random.default_rng(81)
     state = rng.standard_normal(helpers.STATE_DIM)
 
-    proposal = algorithm_under_test._create_proposal(state, rng)
-    algorithm_under_test._evaluate_acceptance_probability(state, proposal)
-    algorithm_under_test._update_cache(accepted=True)
-    evaluations_after_first_step = counting_target.num_evaluate_cost_calls
+    num_steps = 4
+    for step in range(num_steps):
+        proposal = algorithm_under_test._create_proposal(state, rng)
+        algorithm_under_test._evaluate_acceptance_probability(state, proposal)
+        accepted = step % 2 == 0
+        algorithm_under_test._update_cache(accepted)
+        state = proposal if accepted else state
 
-    next_proposal = algorithm_under_test._create_proposal(proposal, rng)
-    algorithm_under_test._evaluate_acceptance_probability(proposal, next_proposal)
-
-    assert counting_target.num_evaluate_cost_calls == evaluations_after_first_step + 1
+    assert counting_target.num_evaluate_cost_calls == num_steps + 1
 
 
 # ==================================================================================================
