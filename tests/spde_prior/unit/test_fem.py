@@ -225,7 +225,7 @@ def test_fem_converter_vertex_round_trip_is_identity(
 
 
 # --------------------------------------------------------------------------------------------------
-def test_fem_converter_pull_back_gradient_satisfies_adjoint_identity(
+def test_fem_converter_convert_vertex_values_to_dof_adjoint_satisfies_adjoint_identity(
     fem_space_setup: helpers.FEMSpaceSetup,
 ) -> None:
     r"""$\langle I^T d, v \rangle = \langle d, I v \rangle$ defines $I^T$ as the adjoint of $I$."""
@@ -234,7 +234,9 @@ def test_fem_converter_pull_back_gradient_satisfies_adjoint_identity(
     vertex_vector = rng.random(converter.global_vertex_space_dim)
     dof_covector = rng.random(converter.local_dof_space_dim)
 
-    pulled_back_inner_product = converter.pull_back_gradient(dof_covector) @ vertex_vector
+    pulled_back_inner_product = (
+        converter.convert_vertex_values_to_dof_adjoint(dof_covector) @ vertex_vector
+    )
 
     forward_inner_product = dof_covector @ converter.convert_vertex_values_to_dofs(vertex_vector)
     helpers.assert_allclose_normwise(
@@ -244,7 +246,7 @@ def test_fem_converter_pull_back_gradient_satisfies_adjoint_identity(
 
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("fem_case", helpers.P1_CASE_IDS, indirect=True)
-def test_fem_converter_pull_back_gradient_matches_dofs_to_vertex_conversion_for_p1(
+def test_fem_converter_convert_vertex_values_to_dof_adjoint_matches_dofs_to_vertex_for_p1(
     fem_space_setup: helpers.FEMSpaceSetup,
 ) -> None:
     """For a P1 space, the vertex-to-DoF interpolation is a permutation, so its adjoint (the
@@ -253,7 +255,7 @@ def test_fem_converter_pull_back_gradient_matches_dofs_to_vertex_conversion_for_
     converter = fem.FEMConverter(fem_space_setup.function_space)
     dof_covector = np.random.default_rng(0).random(converter.local_dof_space_dim)
 
-    pulled_back = converter.pull_back_gradient(dof_covector)
+    pulled_back = converter.convert_vertex_values_to_dof_adjoint(dof_covector)
 
     helpers.assert_allclose_normwise(
         pulled_back,
@@ -264,7 +266,7 @@ def test_fem_converter_pull_back_gradient_matches_dofs_to_vertex_conversion_for_
 
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("fem_case", helpers.P2_CASE_IDS, indirect=True)
-def test_fem_converter_pull_back_gradient_differs_from_dofs_to_vertex_conversion_for_p2(
+def test_fem_converter_convert_vertex_values_to_dof_adjoint_differs_from_dofs_to_vertex_for_p2(
     fem_space_setup: helpers.FEMSpaceSetup,
 ) -> None:
     """For a P2 space, the vertex-to-DoF interpolation also sets edge-midpoint DoFs from vertex
@@ -274,7 +276,7 @@ def test_fem_converter_pull_back_gradient_differs_from_dofs_to_vertex_conversion
     converter = fem.FEMConverter(fem_space_setup.function_space)
     dof_covector = np.random.default_rng(0).random(converter.local_dof_space_dim)
 
-    pulled_back = converter.pull_back_gradient(dof_covector)
+    pulled_back = converter.convert_vertex_values_to_dof_adjoint(dof_covector)
     converted = converter.convert_dofs_to_vertex_values(dof_covector)
 
     assert not np.allclose(pulled_back, converted)
@@ -306,7 +308,9 @@ def test_fem_converter_cell_block_indices_form_permutation(
 
 
 # --------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("direction", ["vertex_to_dofs", "dofs_to_vertex", "pull_back_gradient"])
+@pytest.mark.parametrize(
+    "direction", ["vertex_to_dofs", "dofs_to_vertex", "convert_vertex_values_to_dof_adjoint"]
+)
 @pytest.mark.parametrize("shape_change", ["one_too_long", "column_vector"])
 def test_fem_converter_rejects_wrong_shape(direction: str, shape_change: str) -> None:
     mesh = helpers.create_unit_interval_mesh(helpers.MESH_COMMUNICATOR)
@@ -316,7 +320,8 @@ def test_fem_converter_rejects_wrong_shape(direction: str, shape_change: str) ->
     elif direction == "dofs_to_vertex":
         convert, size = converter.convert_dofs_to_vertex_values, converter.local_dof_space_dim
     else:
-        convert, size = converter.pull_back_gradient, converter.local_dof_space_dim
+        convert = converter.convert_vertex_values_to_dof_adjoint
+        size = converter.local_dof_space_dim
     shape = (size + 1,) if shape_change == "one_too_long" else (size, 1)
 
     with pytest.raises(ValueError, match=r"Expected \w+ to have shape"):
@@ -364,7 +369,7 @@ def test_fem_converter_leaves_input_unchanged(fem_space_setup: helpers.FEMSpaceS
 
     converter.convert_vertex_values_to_dofs(vertex_values)
     converter.convert_dofs_to_vertex_values(dof_values)
-    converter.pull_back_gradient(dof_values)
+    converter.convert_vertex_values_to_dof_adjoint(dof_values)
 
     np.testing.assert_array_equal(vertex_values, vertex_values_copy)
     np.testing.assert_array_equal(dof_values, dof_values_copy)

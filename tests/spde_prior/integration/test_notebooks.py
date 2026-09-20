@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests import notebook_helpers
 from tests.spde_prior import helpers
 
 pytestmark = pytest.mark.integration
@@ -59,7 +60,11 @@ def test_prior_tutorial_notebook_runs_and_matches_reference_values(
     notebook_path: Path, reference_values: dict[str, float]
 ) -> None:
     """Execute a prior tutorial notebook and check its cost/gradient/HVP/sample results."""
-    result_values = helpers.execute_notebook_and_extract_values(notebook_path, RESULT_EXPRESSIONS)
+    result_values = notebook_helpers.execute_notebook_and_extract_values(
+        notebook_path,
+        RESULT_EXPRESSIONS,
+        timeout_seconds=helpers.NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
+    )
 
     for key, expected_value in reference_values.items():
         np.testing.assert_allclose(

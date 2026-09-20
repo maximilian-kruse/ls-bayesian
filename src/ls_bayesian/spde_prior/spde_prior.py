@@ -158,7 +158,7 @@ class SPDEPrior:
         $J(m) = \frac{1}{2}(u - \overline{u})^T \mathcal{C}^{-1} (u - \overline{u})$, and the chain
         rule gives $\nabla_m J(m) = I^T \mathcal{C}^{-1} (u - \overline{u})$. The adjoint $I^T$ is
         applied via
-        [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient],
+        [`FEMConverter.convert_vertex_values_to_dof_adjoint`][ls_bayesian.spde_prior.fem.FEMConverter.convert_vertex_values_to_dof_adjoint],
         which coincides with the plain vertex conversion for a P1 function space, but not in
         general (see that method's docstring).
 
@@ -174,7 +174,7 @@ class SPDEPrior:
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         difference_vector = parameter_vector_dof - self._mean_vector
         gradient_dof = self._precision_operator.apply(difference_vector)
-        gradient = self._fem_converter.pull_back_gradient(gradient_dof)
+        gradient = self._fem_converter.convert_vertex_values_to_dof_adjoint(gradient_dof)
         self._log_debug_vector_statistics("prior_gradient", gradient)
         self._warn_if_not_finite_vector("prior_gradient", gradient)
         return gradient
@@ -299,7 +299,7 @@ class SPDEPrior:
         [`evaluate_hessian_vector_product`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.evaluate_hessian_vector_product]:
         with $I$ the vertex-to-DoF interpolation, this computes $I^T \mathcal{C}^{-1} I(\hat{m})$,
         pulling the DoF-space result back to vertex space via
-        [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient].
+        [`FEMConverter.convert_vertex_values_to_dof_adjoint`][ls_bayesian.spde_prior.fem.FEMConverter.convert_vertex_values_to_dof_adjoint].
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter candidate for
@@ -311,7 +311,9 @@ class SPDEPrior:
         """
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         precision_applied_dof = self._precision_operator.apply(parameter_vector_dof)
-        precision_applied = self._fem_converter.pull_back_gradient(precision_applied_dof)
+        precision_applied = self._fem_converter.convert_vertex_values_to_dof_adjoint(
+            precision_applied_dof
+        )
         return precision_applied
 
     # ----------------------------------------------------------------------------------------------

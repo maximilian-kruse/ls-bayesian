@@ -8,6 +8,7 @@ here before the reference-value comparison is even reached.
 import numpy as np
 import pytest
 
+from tests import notebook_helpers
 from tests.posterior import helpers
 
 pytestmark = pytest.mark.integration
@@ -49,8 +50,10 @@ POSTERIOR_REFERENCE_VALUES = {
 # ==================================================================================================
 def test_posterior_tutorial_notebook_runs_and_matches_reference_values() -> None:
     """Execute the posterior tutorial notebook and check its cost/gradient/MAP results."""
-    result_values = helpers.execute_notebook_and_extract_values(
-        helpers.POSTERIOR_NOTEBOOK, RESULT_EXPRESSIONS
+    result_values = notebook_helpers.execute_notebook_and_extract_values(
+        helpers.POSTERIOR_NOTEBOOK,
+        RESULT_EXPRESSIONS,
+        timeout_seconds=helpers.NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
     )
 
     for key, expected_value in POSTERIOR_REFERENCE_VALUES.items():

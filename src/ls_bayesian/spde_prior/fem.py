@@ -253,14 +253,15 @@ class FEMConverter:
     at the vertices (used, e.g., to express a sample or the covariance/precision operator as a
     field-to-field map on vertex space), but it is not the adjoint of $I$. Differentiating a
     functional of $I(m)$ with respect to $m$ requires that adjoint, $\nabla_m = I^T \nabla_u$,
-    which `pull_back_gradient` provides. Use `pull_back_gradient`, not
-    `convert_dofs_to_vertex_values`, wherever a DoF-space gradient or Hessian-vector product needs
-    to be expressed in vertex space.
+    which `convert_vertex_values_to_dof_adjoint` provides. Use
+    `convert_vertex_values_to_dof_adjoint`, not `convert_dofs_to_vertex_values`, wherever a
+    DoF-space gradient or Hessian-vector product needs to be expressed in vertex space.
 
     Methods:
         convert_vertex_values_to_dofs: Convert vertex based data to DoF representation
         convert_dofs_to_vertex_values: Convert DoF based data to vertex representation
-        pull_back_gradient: Pull back a gradient (covector) from DoF space to vertex space.
+        convert_vertex_values_to_dof_adjoint: Pull back a gradient (covector) from DoF space to
+            vertex space.
 
     Attributes:
         vertex_space_dim (int): Number of mesh vertices, length of vertex vectors.
@@ -337,10 +338,11 @@ class FEMConverter:
         self._dof_to_vertex_input_vector = self._dof_to_vertex_matrix.createVecRight()
         self._dof_to_vertex_output_vector = self._dof_to_vertex_matrix.createVecLeft()
 
-        # Adjoint $I^T$, used by `pull_back_gradient`, is applied via `multTranspose` against $I$
-        # itself (verified to reproduce `convert_vertex_values_to_dofs` exactly), rather than a
-        # separately assembled transposed matrix: `Mat.transpose()` without an explicit `out=`
-        # argument transposes in place, which would otherwise corrupt `_vertex_to_dof_matrix`.
+        # Adjoint $I^T$, used by `convert_vertex_values_to_dof_adjoint`, is applied via
+        # `multTranspose` against $I$ itself (verified to reproduce `convert_vertex_values_to_dofs`
+        # exactly), rather than a separately assembled transposed matrix: `Mat.transpose()` without
+        # an explicit `out=` argument transposes in place, which would otherwise corrupt
+        # `_vertex_to_dof_matrix`.
         self._adjoint_input_vector = self._vertex_to_dof_matrix.createVecLeft()
         self._adjoint_output_vector = self._vertex_to_dof_matrix.createVecRight()
 
@@ -408,7 +410,7 @@ class FEMConverter:
         return self._select_owned_p1_dofs_and_gather(self._dof_to_vertex_output_vector.getArray())
 
     # ----------------------------------------------------------------------------------------------
-    def pull_back_gradient(
+    def convert_vertex_values_to_dof_adjoint(
         self, local_dof_space_gradient: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         r"""Pull back a gradient (covector) from DoF space to vertex space.
@@ -452,9 +454,10 @@ class FEMConverter:
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         """Select the owned-vertex entries of a full P1-DoF-ordered array and gather them.
 
-        Shared tail of `convert_dofs_to_vertex_values` and `pull_back_gradient`: both produce a
-        result in P1-DoF order (via forward interpolation or its adjoint, respectively) that must
-        be reindexed to owned-vertex order and gathered across processes into vertex order.
+        Shared tail of `convert_dofs_to_vertex_values` and `convert_vertex_values_to_dof_adjoint`:
+        both produce a result in P1-DoF order (via forward interpolation or its adjoint,
+        respectively) that must be reindexed to owned-vertex order and gathered across processes
+        into vertex order.
         """
         owned_vertex_values = p1_dof_values[self._p1_vertex_to_dof_map[: self._num_owned_vertices]]
         return _gather_by_index(

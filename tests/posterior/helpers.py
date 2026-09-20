@@ -4,18 +4,14 @@ This is a regular module, imported by test modules and `conftest.py` files alike
 the `conftest.py` files, everything that is imported by name lives here.
 """
 
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, override
+from typing import override
 
-import nbformat
 import numpy as np
 import scipy.sparse as sp
-from nbclient import NotebookClient
 
 from ls_bayesian.posterior import interfaces, likelihood
+from tests import notebook_helpers
 
 # ==================================================================================================
 PARAMETER_DIM = 4
@@ -244,49 +240,6 @@ def create_nonlinear_posterior_setup(
 
 
 # ==================================================================================================
-REPO_ROOT = Path(__file__).resolve().parents[2]
-POSTERIOR_TUTORIALS_DIR = REPO_ROOT / "tutorials" / "posterior"
+POSTERIOR_TUTORIALS_DIR = notebook_helpers.REPO_ROOT / "tutorials" / "posterior"
 POSTERIOR_NOTEBOOK = POSTERIOR_TUTORIALS_DIR / "posterior.ipynb"
 NOTEBOOK_EXECUTION_TIMEOUT_SECONDS = 120
-
-
-def execute_notebook_and_extract_values(
-    notebook_path: Path, expressions: Mapping[str, str]
-) -> dict[str, Any]:
-    """Execute a tutorial notebook and evaluate expressions against its final namespace.
-
-    The notebook is executed unmodified in its own kernel, except for one appended code cell that
-    evaluates the given expressions and serializes the results to stdout as JSON. Expressions
-    reduce large results (e.g. vectors) to compact scalars, such as a norm, so that reference
-    values stay small numeric literals in test code rather than stored array data.
-
-    Args:
-        notebook_path (Path): Path to the `.ipynb` file to execute.
-        expressions (Mapping[str, str]): Mapping from a result key to a Python expression,
-            evaluated in the notebook's namespace after all of its own cells have run. Expression
-            results must be JSON-serializable.
-
-    Returns:
-        dict[str, Any]: Mapping from result key to its JSON-deserialized value.
-    """
-    notebook = nbformat.read(notebook_path, as_version=4)
-    probe_source = (
-        "import json as _json\n"
-        f"_probe_values = {{key: eval(expr) for key, expr in {dict(expressions)!r}.items()}}\n"
-        "print(_json.dumps(_probe_values))"
-    )
-    notebook.cells.append(nbformat.v4.new_code_cell(source=probe_source))
-
-    client = NotebookClient(
-        notebook,
-        timeout=NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
-        kernel_name=notebook.metadata["kernelspec"]["name"],
-        resources={"metadata": {"path": str(notebook_path.parent)}},
-    )
-    client.execute()
-
-    probe_outputs = notebook.cells[-1]["outputs"]
-    stdout_text = "".join(
-        output["text"] for output in probe_outputs if output.get("name") == "stdout"
-    )
-    return json.loads(stdout_text)

@@ -8,8 +8,8 @@ $F = A^{-1} L^T \widehat{M}_e$, via the permutation from
 [`SPDEPrior.apply_covariance_operator`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.apply_covariance_operator]
 for why this does not extend to higher degrees. The precision operator $P = A M^{-1} A$, in
 contrast, is pulled back to vertex space with the adjoint
-[`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient] for
-any degree, so it is checked over all FEM cases.
+[`FEMConverter.convert_vertex_values_to_dof_adjoint`][ls_bayesian.spde_prior.fem.FEMConverter.convert_vertex_values_to_dof_adjoint]
+for any degree, so it is checked over all FEM cases.
 """
 
 from pathlib import Path
@@ -67,7 +67,7 @@ def dense_precision_operator(
 
     Unlike `vertex_space_operator`, which relies on the square P1 vertex-to-DoF permutation, this
     pulls the dense DoF-space operator back with
-    [`FEMConverter.pull_back_gradient`][ls_bayesian.spde_prior.fem.FEMConverter.pull_back_gradient],
+    [`FEMConverter.convert_vertex_values_to_dof_adjoint`][ls_bayesian.spde_prior.fem.FEMConverter.convert_vertex_values_to_dof_adjoint],
     the adjoint $I^T$ that
     [`SPDEPrior.apply_precision_operator`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.apply_precision_operator]
     itself uses, so it agrees with the tested operator for any interpolation degree.
@@ -80,7 +80,7 @@ def dense_precision_operator(
         applied_dof = spde_matrix @ np.linalg.solve(
             assembled_matrices.mass_matrix, spde_matrix @ dof_values
         )
-        return converter.pull_back_gradient(applied_dof)
+        return converter.convert_vertex_values_to_dof_adjoint(applied_dof)
 
     return helpers.materialize_operator(apply, fem_space_setup.fem_case.num_vertices)
 

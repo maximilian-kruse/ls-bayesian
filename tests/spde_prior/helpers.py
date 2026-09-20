@@ -9,23 +9,19 @@ integrals, mathematical properties of the prior operators, or dense numpy comput
 independent of the code under test.
 """
 
-import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import dolfinx as dlx
-import nbformat
 import numpy as np
 import ufl
 from dolfinx.fem import petsc
 from mpi4py import MPI
-from nbclient import NotebookClient
 from petsc4py import PETSc
 
 from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.spde_prior import builder, components, fem, spde_prior, strategies
+from tests import notebook_helpers
 
 # ==================================================================================================
 # Dolfinx meshes require an MPI communicator, all serial test objects live on a single process.
@@ -385,52 +381,9 @@ def whitened_sample_z_scores(
 
 
 # ==================================================================================================
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PRIOR_TUTORIALS_DIR = REPO_ROOT / "tutorials" / "prior"
+PRIOR_TUTORIALS_DIR = notebook_helpers.REPO_ROOT / "tutorials" / "prior"
 BUILDER_NOTEBOOK = PRIOR_TUTORIALS_DIR / "builder.ipynb"
 COMPONENTS_NOTEBOOK = PRIOR_TUTORIALS_DIR / "components.ipynb"
 # The notebooks assemble FEM matrices, run Krylov solves, and render PyVista/matplotlib figures,
 # which can take tens of seconds on CI hardware.
 NOTEBOOK_EXECUTION_TIMEOUT_SECONDS = 600
-
-
-def execute_notebook_and_extract_values(
-    notebook_path: Path, expressions: Mapping[str, str]
-) -> dict[str, Any]:
-    """Execute a tutorial notebook and evaluate expressions against its final namespace.
-
-    The notebook is executed unmodified in its own kernel, except for one appended code cell that
-    evaluates the given expressions and serializes the results to stdout as JSON. Expressions
-    reduce large results (e.g. vertex vectors) to compact scalars, such as a norm, so that
-    reference values stay small numeric literals in test code rather than stored array data.
-
-    Args:
-        notebook_path (Path): Path to the `.ipynb` file to execute.
-        expressions (Mapping[str, str]): Mapping from a result key to a Python expression,
-            evaluated in the notebook's namespace after all of its own cells have run. Expression
-            results must be JSON-serializable.
-
-    Returns:
-        dict[str, Any]: Mapping from result key to its JSON-deserialized value.
-    """
-    notebook = nbformat.read(notebook_path, as_version=4)
-    probe_source = (
-        "import json as _json\n"
-        f"_probe_values = {{key: eval(expr) for key, expr in {dict(expressions)!r}.items()}}\n"
-        "print(_json.dumps(_probe_values))"
-    )
-    notebook.cells.append(nbformat.v4.new_code_cell(source=probe_source))
-
-    client = NotebookClient(
-        notebook,
-        timeout=NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
-        kernel_name=notebook.metadata["kernelspec"]["name"],
-        resources={"metadata": {"path": str(notebook_path.parent)}},
-    )
-    client.execute()
-
-    probe_outputs = notebook.cells[-1]["outputs"]
-    stdout_text = "".join(
-        output["text"] for output in probe_outputs if output.get("name") == "stdout"
-    )
-    return json.loads(stdout_text)
