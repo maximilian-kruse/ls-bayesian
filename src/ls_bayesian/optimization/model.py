@@ -9,6 +9,12 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+# Tolerance below which a negative squared norm from `evaluate_inner_product` is treated as a
+# genuine sign error rather than floating-point round-off. Set to a small multiple of the float64
+# machine epsilon (~2.22e-16), the scale of round-off accumulated over a handful of floating-point
+# operations when forming a bilinear form.
+_SQUARED_NORM_ROUNDOFF_TOLERANCE = -1e2 * np.finfo(np.float64).eps
+
 
 # ==================================================================================================
 class OptimizationModel(ABC):
@@ -110,10 +116,27 @@ class OptimizationModel(ABC):
         Concrete by default; a subclass may override this if a numerically stabler or cheaper norm
         exists for its inner product than forming the bilinear form and taking a square root.
 
+        A squared norm that comes out slightly negative from `evaluate_inner_product` due to
+        floating-point round-off (rather than a genuine sign error) is clamped to zero rather than
+        propagated into `np.sqrt`, which would otherwise silently return `nan`.
+
         Args:
             vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Vector to evaluate the norm of.
+
+        Raises:
+            ValueError: If `evaluate_inner_product(vector, vector)` is negative by more than
+                floating-point round-off, indicating `evaluate_inner_product` is not a valid
+                (positive-semidefinite) inner product.
 
         Returns:
             float: Norm of the vector.
         """
-        return float(np.sqrt(self.evaluate_inner_product(vector, vector)))
+        squared_norm = self.evaluate_inner_product(vector, vector)
+        if squared_norm < 0.0:
+            if squared_norm < _SQUARED_NORM_ROUNDOFF_TOLERANCE:
+                raise ValueError(
+                    "evaluate_inner_product(vector, vector) must be non-negative for a valid "
+                    f"inner product, got {squared_norm}."
+                )
+            squared_norm = 0.0
+        return float(np.sqrt(squared_norm))

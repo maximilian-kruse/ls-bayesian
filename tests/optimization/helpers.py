@@ -235,6 +235,62 @@ class LogPosteriorModel(OptimizationModel):
 
 
 # ==================================================================================================
+class WeightedInnerProductModel(OptimizationModel):
+    """Model exposing only a weighted inner product $(u, v)_W = u^T W v$, for isolating
+    `OptimizationModel.evaluate_norm`'s wiring to `evaluate_inner_product` from any concrete
+    objective or Hessian-vector product."""
+
+    def __init__(self, weight_matrix: np.ndarray) -> None:
+        self.weight_matrix = weight_matrix
+
+    @override
+    def evaluate_cost(self, parameter_vector: np.ndarray) -> float:
+        raise NotImplementedError
+
+    @override
+    def evaluate_gradient(self, parameter_vector: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    @override
+    def evaluate_hessian_vector_product(
+        self, parameter_vector: np.ndarray, direction_vector: np.ndarray
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+    @override
+    def evaluate_inner_product(self, first_vector: np.ndarray, second_vector: np.ndarray) -> float:
+        return float(first_vector @ self.weight_matrix @ second_vector)
+
+
+# ==================================================================================================
+class ConstantInnerProductModel(OptimizationModel):
+    """Model whose `evaluate_inner_product` returns a fixed value regardless of its arguments, for
+    exercising `OptimizationModel.evaluate_norm`'s round-off guard at precise, hand-picked squared
+    norms rather than ones incidentally produced by a real inner product."""
+
+    def __init__(self, inner_product_value: float) -> None:
+        self.inner_product_value = inner_product_value
+
+    @override
+    def evaluate_cost(self, parameter_vector: np.ndarray) -> float:
+        raise NotImplementedError
+
+    @override
+    def evaluate_gradient(self, parameter_vector: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    @override
+    def evaluate_hessian_vector_product(
+        self, parameter_vector: np.ndarray, direction_vector: np.ndarray
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+    @override
+    def evaluate_inner_product(self, first_vector: np.ndarray, second_vector: np.ndarray) -> float:
+        return self.inner_product_value
+
+
+# ==================================================================================================
 class FakeOptimizer(BaseOptimizer):
     """Deterministic double for testing `BaseOptimizer.run()`'s orchestration in isolation from
     any real backend: performs a fixed number of gradient-descent-like steps, calling `callback`
