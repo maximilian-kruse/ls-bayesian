@@ -7,11 +7,6 @@ Classes:
     CustomLBFGSSettings: Settings for `CustomLBFGSOptimizer`.
     CustomLBFGSOptimizer: L-BFGS with cautious updating, generalized to an arbitrary inner
         product.
-
-Functions:
-    two_loop_recursion: L-BFGS two-loop recursion, computing a search direction from the current
-        gradient and stored correction pairs, without forming the inverse-Hessian approximation
-        explicitly.
 """
 
 from collections import deque
@@ -34,6 +29,7 @@ from ls_bayesian.optimization.optimizer import (
     OptimizationResult,
 )
 
+# Initial operator to be used as action of Hessian approximation in double loop recursion
 type SeedOperator = Callable[
     [np.ndarray[tuple[int], np.dtype[np.float64]]], np.ndarray[tuple[int], np.dtype[np.float64]]
 ]
@@ -118,59 +114,6 @@ class CorrectionPairStore:
 
 
 # ==================================================================================================
-def two_loop_recursion(
-    gradient: np.ndarray[tuple[int], np.dtype[np.float64]],
-    correction_pairs: CorrectionPairStore,
-    model: OptimizationModel,
-    seed_operator: SeedOperator,
-) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
-    r"""L-BFGS two-loop recursion, computing a search direction without forming the inverse
-    Hessian approximation $\mathbf{H}_k$ explicitly.
-
-    Implements the two-loop recursion in the form of Nocedal & Wright, "Numerical Optimization"
-    (2006), Algorithm 7.4, generalized to an arbitrary inner product, via
-    `model.evaluate_inner_product`. With no stored correction pairs and the identity seed
-    operator, this reduces exactly to steepest descent, $\mathbf{p}_k = -\mathbf{g}_k$.
-
-    Deviation from `optimization.tex`: the notes' first loop (lines 120-127) compute
-    $\eta_i = \rho_i(\mathbf{y}_i, \mathbf{q})$, dotting $\mathbf{q}$ with $\mathbf{y}_i$. The
-    standard recursion (and the only form consistent with the explicit BFGS inverse-Hessian update
-    the same notes state in eq. 29/43 — verified numerically: reconstructing $\mathbf{H}_1$
-    explicitly from that update and applying it to a gradient does not match the notes' two-loop
-    pseudocode for a single correction pair) instead dots $\mathbf{q}$ with $\mathbf{s}_i$,
-    i.e. $\eta_i = \rho_i(\mathbf{s}_i, \mathbf{q})$; this is what is implemented here. This looks
-    like a transcription slip in the notes (the second loop's $\zeta_i = \rho_i(\mathbf{y}_i,
-    \mathbf{r})$ already matches the standard form).
-
-    Args:
-        gradient (np.ndarray[tuple[int], np.dtype[np.float64]]): Current gradient
-            $\mathbf{g}_k$, represented in `model`'s inner product.
-        correction_pairs (CorrectionPairStore): Stored correction pairs
-            $\{(\mathbf{s}_i, \mathbf{y}_i, \rho_i)\}$.
-        model (OptimizationModel): Model whose `evaluate_inner_product` the recursion is carried
-            out in.
-        seed_operator (SeedOperator): Initial inverse-Hessian approximation $\mathbf{H}_k^0$.
-
-    Returns:
-        np.ndarray[tuple[int], np.dtype[np.float64]]: Search direction $\mathbf{p}_k = -\mathbf{r}$.
-    """
-    inner_product = model.evaluate_inner_product
-    q = gradient.copy()
-    etas: list[float] = []
-    for pair in reversed(correction_pairs):
-        eta = pair.inner_product_reciprocal * inner_product(pair.state_difference, q)
-        q = q - eta * pair.gradient_difference
-        etas.append(eta)
-
-    r = seed_operator(q)
-    for pair, eta in zip(correction_pairs, reversed(etas), strict=True):
-        zeta = pair.inner_product_reciprocal * inner_product(pair.gradient_difference, r)
-        r = r + pair.state_difference * (eta - zeta)
-
-    return -r
-
-
-# ==================================================================================================
 @dataclass
 class CustomLBFGSSettings:
     r"""Settings for `CustomLBFGSOptimizer`.
@@ -209,10 +152,9 @@ class _CustomLBFGSRawResult:
 class CustomLBFGSOptimizer(BaseOptimizer):
     r"""L-BFGS with cautious updating, generalized to an arbitrary inner-product space.
 
-    Implements the algorithm of `optimization.tex` (Algorithm 2: two-loop recursion, Armijo
-    backtracking line search, cautious correction-pair updating), generalized from the
-    Cameron-Martin space of that derivation to whatever inner product the
-    [`OptimizationModel`][ls_bayesian.optimization.model.OptimizationModel] passed to `run`
+    Combines the two-loop recursion, an Armijo backtracking line search, and cautious
+    correction-pair updating, generalized from a Cameron-Martin space to whatever inner product
+    the [`OptimizationModel`][ls_bayesian.optimization.model.OptimizationModel] passed to `run`
     implements via `evaluate_inner_product`/`evaluate_norm`. `optimization` never depends on where
     that inner product comes from (e.g. a Cameron-Martin inner product induced by a Bayesian
     prior's covariance, built in another subpackage).
@@ -223,12 +165,11 @@ class CustomLBFGSOptimizer(BaseOptimizer):
     covariance operator to a raw discretized gradient) is the caller's responsibility, performed
     outside this class, when implementing the `OptimizationModel`.
 
-    Deviating from the notes' unbounded backtracking `while` loop (line 142-150), the injected
-    [`LineSearch`][ls_bayesian.optimization.components.line_search.LineSearch] caps the number of
-    backtracking steps and raises if none succeeds, since an unbounded loop could hang if
-    `search_direction` is not a genuine descent direction due to numerical error. Termination is
-    not specified in the notes; this class adds `maximum_num_iterations` and
-    `gradient_norm_tolerance` (Sec. `CustomLBFGSSettings`) as explicit stopping criteria.
+    The injected [`LineSearch`][ls_bayesian.optimization.components.line_search.LineSearch] caps
+    the number of backtracking steps and raises if none succeeds, since an unbounded loop could
+    hang if `search_direction` is not a genuine descent direction due to numerical error. This
+    class adds `maximum_num_iterations` and `gradient_norm_tolerance` (Sec.
+    `CustomLBFGSSettings`) as explicit stopping criteria.
 
     Attributes:
         requires_hessian (bool): Always `False`; this method does not use Hessian information.
@@ -268,6 +209,48 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         self._seed_operator = seed_operator
 
     # ----------------------------------------------------------------------------------------------
+    def _two_loop_recursion(
+        self,
+        gradient: np.ndarray[tuple[int], np.dtype[np.float64]],
+        correction_pairs: CorrectionPairStore,
+        model: OptimizationModel,
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""L-BFGS two-loop recursion, computing a search direction without forming the inverse
+        Hessian approximation $\mathbf{H}_k$ explicitly.
+
+        Implements the two-loop recursion in the form of Nocedal & Wright, "Numerical
+        Optimization" (2006), Algorithm 7.4, generalized to an arbitrary inner product, via
+        `model.evaluate_inner_product`. With no stored correction pairs and the identity seed
+        operator, this reduces exactly to steepest descent, $\mathbf{p}_k = -\mathbf{g}_k$.
+
+        Args:
+            gradient (np.ndarray[tuple[int], np.dtype[np.float64]]): Current gradient
+                $\mathbf{g}_k$, represented in `model`'s inner product.
+            correction_pairs (CorrectionPairStore): Stored correction pairs
+                $\{(\mathbf{s}_i, \mathbf{y}_i, \rho_i)\}$.
+            model (OptimizationModel): Model whose `evaluate_inner_product` the recursion is
+                carried out in.
+
+        Returns:
+            np.ndarray[tuple[int], np.dtype[np.float64]]: Search direction
+                $\mathbf{p}_k = -\mathbf{r}$.
+        """
+        inner_product = model.evaluate_inner_product
+        q = gradient.copy()
+        etas: list[float] = []
+        for pair in reversed(correction_pairs):
+            eta = pair.inner_product_reciprocal * inner_product(pair.state_difference, q)
+            q = q - eta * pair.gradient_difference
+            etas.append(eta)
+
+        r = self._seed_operator(q)
+        for pair, eta in zip(correction_pairs, reversed(etas), strict=True):
+            zeta = pair.inner_product_reciprocal * inner_product(pair.gradient_difference, r)
+            r = r + pair.state_difference * (eta - zeta)
+
+        return -r
+
+    # ----------------------------------------------------------------------------------------------
     @override
     def _run_impl(
         self,
@@ -279,8 +262,12 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         step, cautious updating for whether to store the new correction pair, until convergence or
         `maximum_num_iterations` is reached.
 
-        `model.evaluate_hessian_vector_product` is never called, since this method does not use
-        Hessian information.
+        Raises:
+            ValueError: If the acceptance strategy accepts a correction pair with non-positive
+                curvature $(s, y) \\leq 0$, which would make the correction pair's reciprocal
+                $\\rho$ ill-defined or sign-flip the limited-memory inverse-Hessian approximation.
+                `CautiousUpdateStrategy` guards against this; a permissive strategy such as
+                `AlwaysAcceptStrategy` does not.
         """
         loss_function = model.evaluate_cost
         gradient_function = model.evaluate_gradient
@@ -295,9 +282,7 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         converged = gradient_norm <= self._settings.gradient_norm_tolerance
 
         while not converged and iteration < self._settings.maximum_num_iterations:
-            search_direction = two_loop_recursion(
-                current_gradient, correction_pairs, model, self._seed_operator
-            )
+            search_direction = self._two_loop_recursion(current_gradient, correction_pairs, model)
             directional_derivative = inner_product(current_gradient, search_direction)
             line_search_result = self._line_search.find_step_size(
                 current_point, search_direction, current_loss, directional_derivative, loss_function
@@ -312,11 +297,15 @@ class CustomLBFGSOptimizer(BaseOptimizer):
                 state_difference, gradient_difference, current_gradient, model
             )
             if pair_accepted:
+                curvature = inner_product(state_difference, gradient_difference)
+                if curvature <= 0.0:
+                    raise ValueError(
+                        "Correction pair accepted by the acceptance strategy has non-positive "
+                        f"curvature (s, y) = {curvature}; the limited-memory inverse-Hessian "
+                        "approximation requires (s, y) > 0 to stay positive definite."
+                    )
                 correction_pairs.add(
-                    state_difference,
-                    gradient_difference,
-                    inner_product_reciprocal=1.0
-                    / inner_product(state_difference, gradient_difference),
+                    state_difference, gradient_difference, inner_product_reciprocal=1.0 / curvature
                 )
 
             current_point, current_loss, current_gradient = next_point, next_loss, next_gradient

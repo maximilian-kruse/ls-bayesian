@@ -22,7 +22,7 @@ from ls_bayesian.optimization.model import OptimizationModel
 
 # ==================================================================================================
 class CorrectionPairAcceptanceStrategy(ABC):
-    """ABC interface for correction-pair acceptance policies.
+    """ABC interface for correction-pair acceptance policies in matrix-free algorithms like L-BFGS.
 
     Methods:
         accept_update: Decide whether a correction pair should be stored.
@@ -97,9 +97,7 @@ class CautiousUpdateSettings:
 
 # ==================================================================================================
 class CautiousUpdateStrategy(CorrectionPairAcceptanceStrategy):
-    r"""Cautious updating, the strengthened curvature condition of Li & Fukushima (2001).
-
-    Implements `optimization.tex`, eq. 81 / lines 162-168:
+    r"""Cautious updating, the strengthened curvature condition of Li & Fukushima (2001):
 
     $$
     \frac{(y, s)}{\|s\|^2} \geq \epsilon \|g\|^\alpha,
@@ -143,7 +141,7 @@ class CautiousUpdateStrategy(CorrectionPairAcceptanceStrategy):
             inner_product(gradient_difference, state_difference) / state_difference_norm_squared
         )
         threshold = self._settings.epsilon * gradient_norm**self._settings.alpha
-        accepted = curvature_ratio >= threshold
+        accepted = curvature_ratio > threshold
         if not accepted:
             self._log_debug_rejection(
                 f"curvature ratio {curvature_ratio:.3e} below threshold {threshold:.3e}"

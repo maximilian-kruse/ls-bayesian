@@ -4,11 +4,6 @@ Classes:
     OptimizationResult: Outcome of an optimization run, backend-agnostic.
     OptimizationHistory: Records loss and gradient-norm values as an optimization progresses.
     BaseOptimizer: ABC template-method driver for optimization backends.
-
-Functions:
-    log_header: Log the column header for iteration progress reports.
-    log_iteration: Log one row of iteration progress.
-    log_final_outcome: Log the final convergence status and termination message of a run.
 """
 
 import time
@@ -28,7 +23,7 @@ from ls_bayesian.optimization.model import OptimizationModel
 # iteration, not re-evaluate the model for this purpose.
 type IterationCallback = Callable[[float, float], None]
 
-# Column widths for the progress table logged by `log_header`/`log_iteration`. Wide enough to fit
+# Column widths for the progress table logged by `_log_header`/`_log_iteration`. Wide enough to fit
 # the longest header ("Grad. norm") and typical numeric values in scientific notation (e.g.
 # "1.234568e+00") with one space of padding.
 _ITERATION_COLUMN_WIDTH = 10
@@ -124,75 +119,6 @@ class OptimizationHistory:
 
 
 # ==================================================================================================
-def log_header(logger: BaseLogger | None) -> None:
-    """Log the column header for iteration-by-iteration progress reports.
-
-    This function, together with `log_iteration`, is the only I/O performed by the `optimization`
-    subpackage, kept separate from the actual optimization computation.
-
-    Args:
-        logger (BaseLogger | None): Logger to report to. No-op if `None`.
-    """
-    if logger is None:
-        return
-    header = (
-        f"{'Iteration':>{_ITERATION_COLUMN_WIDTH}} "
-        f"{'Time [s]':>{_TIME_COLUMN_WIDTH}} "
-        f"{'Loss':>{_LOSS_COLUMN_WIDTH}} "
-        f"{'Grad. norm':>{_GRADIENT_NORM_COLUMN_WIDTH}}"
-    )
-    logger.info(header)
-    logger.info("-" * len(header))
-
-
-# ==================================================================================================
-def log_iteration(
-    logger: BaseLogger | None,
-    iteration: int,
-    elapsed_time_seconds: float,
-    loss: float,
-    gradient_norm: float,
-) -> None:
-    """Log one row of iteration-by-iteration progress: iteration, elapsed time, loss, grad norm.
-
-    Args:
-        logger (BaseLogger | None): Logger to report to. No-op if `None`.
-        iteration (int): Iteration number.
-        elapsed_time_seconds (float): Elapsed time since the start of the optimization run, in
-            seconds.
-        loss (float): Loss value at this iteration.
-        gradient_norm (float): Gradient norm at this iteration.
-    """
-    if logger is None:
-        return
-    row = (
-        f"{iteration:>{_ITERATION_COLUMN_WIDTH}d} "
-        f"{elapsed_time_seconds:>{_TIME_COLUMN_WIDTH}.3f} "
-        f"{loss:>{_LOSS_COLUMN_WIDTH}.6e} "
-        f"{gradient_norm:>{_GRADIENT_NORM_COLUMN_WIDTH}.6e}"
-    )
-    logger.info(row)
-
-
-# ==================================================================================================
-def log_final_outcome(logger: BaseLogger | None, result: OptimizationResult) -> None:
-    """Log the final convergence status and termination message of a completed run.
-
-    Args:
-        logger (BaseLogger | None): Logger to report to. No-op if `None`.
-        result (OptimizationResult): Outcome of the run.
-    """
-    if logger is None:
-        return
-    outcome = "Converged" if result.success else "Did not converge"
-    message = f"{outcome} after {result.num_iterations} iterations: {result.status_message}"
-    if result.success:
-        logger.info(message)
-    else:
-        logger.warning(message)
-
-
-# ==================================================================================================
 class BaseOptimizer(ABC):
     """ABC template-method driver for gradient-based optimization backends.
 
@@ -204,9 +130,9 @@ class BaseOptimizer(ABC):
     class owns everything that is common across backends: input validation, progress
     instrumentation via
     [`OptimizationHistory`][ls_bayesian.optimization.optimizer.OptimizationHistory],
-    iteration-by-iteration reporting via `log_header`/`log_iteration`, and final-outcome reporting
-    via `log_final_outcome` (`info` on convergence, `warning` otherwise), all to an optional
-    [`BaseLogger`][ls_bayesian.common.logging.BaseLogger]. `_run_impl` receives the model
+    iteration-by-iteration reporting via `_log_header`/`_log_iteration`, and final-outcome
+    reporting via `_log_final_outcome` (`info` on convergence, `warning` otherwise), all to an
+    optional [`BaseLogger`][ls_bayesian.common.logging.BaseLogger]. `_run_impl` receives the model
     unwrapped: evaluating `model.evaluate_cost`/`evaluate_gradient` never records anything.
     Instead, `_run_impl` must call the `IterationCallback` it is given exactly once per accepted
     iteration, with the loss and gradient norm at the new iterate (typically values it already
@@ -266,7 +192,7 @@ class BaseOptimizer(ABC):
         history = OptimizationHistory()
         start_time = time.monotonic()
         iteration_count = 0
-        log_header(self._logger)
+        self._log_header()
 
         def callback(loss: float, gradient_norm: float) -> None:
             nonlocal iteration_count
@@ -274,11 +200,11 @@ class BaseOptimizer(ABC):
             history.record_loss(loss)
             history.record_gradient_norm(gradient_norm)
             elapsed_time_seconds = time.monotonic() - start_time
-            log_iteration(self._logger, iteration_count, elapsed_time_seconds, loss, gradient_norm)
+            self._log_iteration(iteration_count, elapsed_time_seconds, loss, gradient_norm)
 
         raw_result = self._run_impl(initial_guess, model, callback)
         result = self._create_optimization_result(raw_result, history)
-        log_final_outcome(self._logger, result)
+        self._log_final_outcome(result)
         return result
 
     # ----------------------------------------------------------------------------------------------
@@ -331,3 +257,67 @@ class BaseOptimizer(ABC):
             )
         if not np.all(np.isfinite(initial_guess)):
             raise ValueError("initial_guess must contain only finite values.")
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_header(self) -> None:
+        """Log the column header for iteration-by-iteration progress reports.
+
+        This method, together with `_log_iteration` and `_log_final_outcome`, is the only I/O
+        performed by the `optimization` subpackage, kept separate from the actual optimization
+        computation. No-op if `self._logger` is `None`.
+        """
+        if self._logger is None:
+            return
+        header = (
+            f"{'Iteration':>{_ITERATION_COLUMN_WIDTH}} "
+            f"{'Time [s]':>{_TIME_COLUMN_WIDTH}} "
+            f"{'Loss':>{_LOSS_COLUMN_WIDTH}} "
+            f"{'Grad. norm':>{_GRADIENT_NORM_COLUMN_WIDTH}}"
+        )
+        self._logger.info(header)
+        self._logger.info("-" * len(header))
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_iteration(
+        self,
+        iteration: int,
+        elapsed_time_seconds: float,
+        loss: float,
+        gradient_norm: float,
+    ) -> None:
+        """Log one row of iteration-by-iteration progress: iteration, elapsed time, loss, grad
+        norm. No-op if `self._logger` is `None`.
+
+        Args:
+            iteration (int): Iteration number.
+            elapsed_time_seconds (float): Elapsed time since the start of the optimization run, in
+                seconds.
+            loss (float): Loss value at this iteration.
+            gradient_norm (float): Gradient norm at this iteration.
+        """
+        if self._logger is None:
+            return
+        row = (
+            f"{iteration:>{_ITERATION_COLUMN_WIDTH}d} "
+            f"{elapsed_time_seconds:>{_TIME_COLUMN_WIDTH}.3f} "
+            f"{loss:>{_LOSS_COLUMN_WIDTH}.6e} "
+            f"{gradient_norm:>{_GRADIENT_NORM_COLUMN_WIDTH}.6e}"
+        )
+        self._logger.info(row)
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_final_outcome(self, result: OptimizationResult) -> None:
+        """Log the final convergence status and termination message of a completed run. No-op if
+        `self._logger` is `None`.
+
+        Args:
+            result (OptimizationResult): Outcome of the run.
+        """
+        if self._logger is None:
+            return
+        outcome = "Converged" if result.success else "Did not converge"
+        message = f"{outcome} after {result.num_iterations} iterations: {result.status_message}"
+        if result.success:
+            self._logger.info(message)
+        else:
+            self._logger.warning(message)

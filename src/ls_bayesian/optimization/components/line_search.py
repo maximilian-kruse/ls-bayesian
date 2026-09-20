@@ -88,9 +88,9 @@ class ArmijoBacktrackingLineSearchSettings:
 
     Attributes:
         initial_step_size (Real): Initial step size $\tau^{(0)}$. Defaults to `1.0`, the standard
-            initialization for quasi-Newton line searches (`optimization.tex`, line 95): the
-            quasi-Newton direction itself already incorporates curvature information, so a full
-            step is usually accepted or nearly so.
+            initialization for quasi-Newton line searches: the quasi-Newton direction itself
+            already incorporates curvature information, so a full step is usually accepted or
+            nearly so.
         sufficient_decrease_constant (Real): Armijo constant $c_1 \in (0, 1)$. Defaults to
             `1e-4`, the standard Armijo sufficient-decrease constant (Nocedal & Wright, "Numerical
             Optimization", 2006, Sec. 3.1): a small value close to 0 accepts almost any decrease,
@@ -98,15 +98,14 @@ class ArmijoBacktrackingLineSearchSettings:
             which needs a stricter tolerance).
         backtracking_factor (Real): Backtracking divisor $\beta > 1$;
             $\tau^{(i+1)} = \tau^{(i)} / \beta$. Defaults to `2.0`, halving the step on each
-            backtrack (`optimization.tex`, line 95, uses beta > 1 as a divisor), the standard,
-            simplest choice (Nocedal & Wright, "Numerical Optimization", 2006, Sec. 3.1).
+            backtrack, the standard, simplest choice (Nocedal & Wright, "Numerical Optimization",
+            2006, Sec. 3.1).
         max_backtracking_steps (int): Maximum number of backtracking steps before raising.
             Defaults to `50`: with the defaults above, 50 backtracking steps shrink the step size
             to 2^-50 (~1e-15) before giving up, comfortably below double-precision step sizes that
             could still be meaningful. Beyond that, a further decrease cannot be represented
             reliably, indicating the search direction is likely not a descent direction (e.g. due
-            to numerical error), so the search should raise instead of continuing to loop, unlike
-            the notes' unbounded `while` loop (line 142-150).
+            to numerical error), so the search raises instead of looping indefinitely.
     """
 
     initial_step_size: Annotated[Real, Is[lambda x: x > 0]] = 1.0
@@ -120,11 +119,10 @@ class ArmijoBacktrackingLineSearch(LineSearchStrategy):
     r"""Backtracking line search on the Armijo sufficient-decrease condition.
 
     For step size $\tau$, accepts the first $\tau^{(i)} = \tau^{(0)} / \beta^i$ satisfying
-    $I(\mathbf{m}_k + \tau\mathbf{p}_k) \leq I(\mathbf{m}_k) + c_1\tau(\mathbf{g}_k,\mathbf{p}_k)$
-    (`optimization.tex`, eq. 91 / lines 142-150). Unlike the notes' pseudocode, the backtracking
-    loop is capped at `settings.max_backtracking_steps`, raising instead of looping indefinitely
-    if no acceptable step is found; this can only happen if `search_direction` is not a genuine
-    descent direction, e.g. from numerical error.
+    $I(\mathbf{m}_k + \tau\mathbf{p}_k) \leq I(\mathbf{m}_k) + c_1\tau(\mathbf{g}_k,\mathbf{p}_k)$.
+    The backtracking loop is capped at `settings.max_backtracking_steps`, raising instead of
+    looping indefinitely if no acceptable step is found; this can only happen if
+    `search_direction` is not a genuine descent direction, e.g. from numerical error.
     """
 
     # ----------------------------------------------------------------------------------------------
