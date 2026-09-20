@@ -16,6 +16,7 @@ from typing import Annotated, override
 import numpy as np
 from beartype.vale import Is
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.optimization.model import OptimizationModel
 
 
@@ -111,13 +112,16 @@ class CautiousUpdateStrategy(CorrectionPairAcceptanceStrategy):
     """
 
     # ----------------------------------------------------------------------------------------------
-    def __init__(self, settings: CautiousUpdateSettings) -> None:
+    def __init__(self, settings: CautiousUpdateSettings, logger: BaseLogger | None = None) -> None:
         """Initialize the strategy.
 
         Args:
             settings (CautiousUpdateSettings): Settings for the condition.
+            logger (BaseLogger | None, optional): Logger for rejected correction pairs, reported
+                at debug level. Defaults to `None`.
         """
         self._settings = settings
+        self._logger = logger
 
     # ----------------------------------------------------------------------------------------------
     @override
@@ -132,9 +136,22 @@ class CautiousUpdateStrategy(CorrectionPairAcceptanceStrategy):
         inner_product = model.evaluate_inner_product
         state_difference_norm_squared = inner_product(state_difference, state_difference)
         if state_difference_norm_squared == 0.0:
+            self._log_debug_rejection("state difference has zero norm")
             return False
         gradient_norm = model.evaluate_norm(gradient)
         curvature_ratio = (
             inner_product(gradient_difference, state_difference) / state_difference_norm_squared
         )
-        return curvature_ratio >= self._settings.epsilon * gradient_norm**self._settings.alpha
+        threshold = self._settings.epsilon * gradient_norm**self._settings.alpha
+        accepted = curvature_ratio >= threshold
+        if not accepted:
+            self._log_debug_rejection(
+                f"curvature ratio {curvature_ratio:.3e} below threshold {threshold:.3e}"
+            )
+        return accepted
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_debug_rejection(self, reason: str) -> None:
+        """Log why a correction pair was rejected, if a logger is attached."""
+        if self._logger is not None:
+            self._logger.debug(f"Correction pair rejected: {reason}.")

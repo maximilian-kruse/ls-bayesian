@@ -18,6 +18,8 @@ from typing import Annotated, override
 import numpy as np
 from beartype.vale import Is
 
+from ls_bayesian.common.logging import BaseLogger
+
 
 # ==================================================================================================
 @dataclass(frozen=True)
@@ -126,13 +128,19 @@ class ArmijoBacktrackingLineSearch(LineSearchStrategy):
     """
 
     # ----------------------------------------------------------------------------------------------
-    def __init__(self, settings: ArmijoBacktrackingLineSearchSettings) -> None:
+    def __init__(
+        self, settings: ArmijoBacktrackingLineSearchSettings, logger: BaseLogger | None = None
+    ) -> None:
         """Initialize the line search.
 
         Args:
             settings (ArmijoBacktrackingLineSearchSettings): Settings for the line search.
+            logger (BaseLogger | None, optional): Logger for rejected trial steps (debug level)
+                and for the search-direction warning issued if no acceptable step is found
+                (warning level). Defaults to `None`.
         """
         self._settings = settings
+        self._logger = logger
 
     # ----------------------------------------------------------------------------------------------
     @override
@@ -151,16 +159,24 @@ class ArmijoBacktrackingLineSearch(LineSearchStrategy):
                 `settings.max_backtracking_steps` backtracking steps.
         """
         step_size = self._settings.initial_step_size
-        for _ in range(self._settings.max_backtracking_steps + 1):
+        for backtracking_step in range(self._settings.max_backtracking_steps + 1):
             candidate_loss = loss_function(current_point + step_size * search_direction)
             if candidate_loss <= current_loss + (
                 self._settings.sufficient_decrease_constant * step_size * directional_derivative
             ):
                 return LineSearchResult(step_size=step_size, loss=candidate_loss)
+            if self._logger is not None:
+                self._logger.debug(
+                    f"Backtracking step {backtracking_step}: step size {step_size:.3e} rejected "
+                    f"(loss {candidate_loss:.6e})."
+                )
             step_size /= self._settings.backtracking_factor
 
-        raise RuntimeError(
+        message = (
             "Armijo backtracking line search did not find an acceptable step size within "
             f"{self._settings.max_backtracking_steps} steps. The search direction may not be a "
             "descent direction."
         )
+        if self._logger is not None:
+            self._logger.warning(message)
+        raise RuntimeError(message)

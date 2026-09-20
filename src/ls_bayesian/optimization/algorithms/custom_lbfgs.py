@@ -322,9 +322,7 @@ class CustomLBFGSOptimizer(BaseOptimizer):
             current_point, current_loss, current_gradient = next_point, next_loss, next_gradient
             gradient_norm = model.evaluate_norm(current_gradient)
             iteration += 1
-            self._log_debug_iteration_detail(
-                iteration, line_search_result.step_size, pair_accepted
-            )
+            self._log_debug_iteration_detail(iteration, line_search_result.step_size, pair_accepted)
             callback(current_loss, gradient_norm)
             converged = gradient_norm <= self._settings.gradient_norm_tolerance
 
