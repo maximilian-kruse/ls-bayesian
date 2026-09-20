@@ -6,6 +6,7 @@ Classes:
 
 import numpy as np
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.spde_prior import components, fem
 
 
@@ -52,6 +53,7 @@ class SPDEPrior:
         covariance_factorization: components.InterfaceComponent,
         fem_converter: fem.FEMConverter,
         seed: int,
+        logger: BaseLogger | None = None,
     ) -> None:
         r"""Initialize SPDEPrior distribution object.
 
@@ -67,6 +69,15 @@ class SPDEPrior:
             fem_converter (fem.FEMConverter): Converter object to switch between vertex-
                 and DoF-based representation of vectors.
             seed (int): Random seed for the internal random number generator.
+            logger (BaseLogger | None, optional): Logger for evaluation diagnostics of
+                [`evaluate_cost`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.evaluate_cost],
+                [`evaluate_gradient`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.evaluate_gradient]
+                and
+                [`evaluate_hessian_vector_product`][ls_bayesian.spde_prior.spde_prior.SPDEPrior.evaluate_hessian_vector_product].
+                Nothing is logged if `None`. The caller owns the logger's lifetime (construction,
+                closing); the prior never constructs its own logger, so the same logger can be
+                shared with other components, e.g. a
+                [`LogPosterior`][ls_bayesian.posterior.posterior.LogPosterior]. Defaults to `None`.
 
         Raises:
             ValueError: Checks that the mean vector is given on the mesh vertices.
@@ -96,6 +107,7 @@ class SPDEPrior:
         self._covariance_operator = covariance_operator
         self._covariance_factorization = covariance_factorization
         self._prng = np.random.default_rng(seed)
+        self._logger = logger
 
     # ----------------------------------------------------------------------------------------------
     @property
@@ -122,6 +134,7 @@ class SPDEPrior:
             RuntimeError: If the cost is negative, i.e. the precision operator is not positive
                 semi-definite.
         """
+        self._log_debug_evaluation_start("Prior cost evaluation", parameter_vector)
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         difference_vector = parameter_vector_dof - self._mean_vector
         local_cost = np.inner(difference_vector, self._precision_operator.apply(difference_vector))
@@ -131,6 +144,8 @@ class SPDEPrior:
                 f"Prior cost is negative ({cost}), the precision operator is not positive "
                 "semi-definite."
             )
+        self._log_debug_message(f"prior_cost: {cost}")
+        self._warn_if_not_finite("prior_cost", cost)
         return float(cost)
 
     # ----------------------------------------------------------------------------------------------
@@ -155,10 +170,13 @@ class SPDEPrior:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Gradient of the cost/negative
                 log-probability, given on mesh vertices.
         """
+        self._log_debug_evaluation_start("Prior gradient evaluation", parameter_vector)
         parameter_vector_dof = self._fem_converter.convert_vertex_values_to_dofs(parameter_vector)
         difference_vector = parameter_vector_dof - self._mean_vector
         gradient_dof = self._precision_operator.apply(difference_vector)
         gradient = self._fem_converter.pull_back_gradient(gradient_dof)
+        self._log_debug_vector_statistics("prior_gradient", gradient)
+        self._warn_if_not_finite_vector("prior_gradient", gradient)
         return gradient
 
     # ----------------------------------------------------------------------------------------------
@@ -178,7 +196,12 @@ class SPDEPrior:
             np.ndarray[tuple[int], np.dtype[np.float64]]: Hessian-vector product,
                 given on mesh vertices.
         """
+        self._log_debug_evaluation_start(
+            "Prior Hessian-vector product evaluation", direction_vector
+        )
         hessian_vector_product = self.apply_precision_operator(direction_vector)
+        self._log_debug_vector_statistics("prior_hessian_vector_product", hessian_vector_product)
+        self._warn_if_not_finite_vector("prior_hessian_vector_product", hessian_vector_product)
         return hessian_vector_product
 
     # ----------------------------------------------------------------------------------------------
@@ -290,3 +313,51 @@ class SPDEPrior:
         precision_applied_dof = self._precision_operator.apply(parameter_vector_dof)
         precision_applied = self._fem_converter.pull_back_gradient(precision_applied_dof)
         return precision_applied
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_debug_evaluation_start(
+        self, message: str, vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> None:
+        """Log the start of an evaluation and the vertex-space vector it is evaluated at."""
+        self._log_debug_message(message)
+        self._log_debug_vector_statistics("input_vector", vector)
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_debug_message(self, message: str) -> None:
+        """Log a message, if a logger is attached."""
+        if self._logger is not None:
+            self._logger.debug(message)
+
+    # ----------------------------------------------------------------------------------------------
+    def _log_debug_vector_statistics(
+        self, name: str, vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> None:
+        """Log value range and Euclidean norm of a vector, if a logger is attached."""
+        if self._logger is not None:
+            self._logger.debug(
+                f"{name} in: [{np.min(vector)}, {np.max(vector)}], norm: {np.linalg.norm(vector)}"
+            )
+
+    # ----------------------------------------------------------------------------------------------
+    def _warn_if_not_finite(self, name: str, value: float) -> None:
+        """Log a warning if a scalar value is not finite, if a logger is attached.
+
+        A non-finite cost usually signals an ill-conditioned or diverged Krylov solve underlying
+        one of the prior's operators; this is only a warning, not an error, since a caller such as
+        a line search may legitimately probe points where the cost is temporarily non-finite before
+        rejecting them.
+        """
+        if self._logger is not None and not np.isfinite(value):
+            self._logger.warning(f"{name} is not finite: {value}.")
+
+    # ----------------------------------------------------------------------------------------------
+    def _warn_if_not_finite_vector(
+        self, name: str, vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> None:
+        """Log a warning if any vector entry is not finite, if a logger is attached.
+
+        See [`_warn_if_not_finite`][ls_bayesian.spde_prior.spde_prior.SPDEPrior._warn_if_not_finite]
+        for why this is a warning rather than an error.
+        """
+        if self._logger is not None and not np.all(np.isfinite(vector)):
+            self._logger.warning(f"{name} contains non-finite values.")

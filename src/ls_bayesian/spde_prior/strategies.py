@@ -8,6 +8,7 @@ from typing import override
 
 from petsc4py import PETSc
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.spde_prior import components
 from ls_bayesian.spde_prior.builder import SPDEComponentStrategy
 
@@ -37,6 +38,7 @@ class BilaplacianComponentStrategy(SPDEComponentStrategy):
         dof_map_matrix: PETSc.Mat,
         cg_solver_settings: components.InverseMatrixSolverSettings,
         amg_solver_settings: components.InverseMatrixSolverSettings,
+        logger: BaseLogger | None = None,
     ) -> tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
         r"""Build PETSc components for bilaplacian prior from FEM matrices.
 
@@ -55,6 +57,10 @@ class BilaplacianComponentStrategy(SPDEComponentStrategy):
                 CG-preconditioned inverse of the mass matrix.
             amg_solver_settings (components.InverseMatrixSolverSettings): Solver settings for the
                 AMG-preconditioned inverse of the SPDE matrix.
+            logger (BaseLogger | None, optional): Logger passed on to the
+                [`InverseMatrixSolver`][ls_bayesian.spde_prior.components.InverseMatrixSolver]
+                components for convergence diagnostics. Nothing is logged if `None`. Defaults to
+                `None`.
 
         Returns:
             tuple[components.PETScComponent,
@@ -70,10 +76,10 @@ class BilaplacianComponentStrategy(SPDEComponentStrategy):
         block_diagonal_matrix_component = components.Matrix(block_diagonal_matrix)
         dof_map_matrix_component = components.Matrix(dof_map_matrix)
         mass_matrix_inverse_component = components.InverseMatrixSolver(
-            cg_solver_settings, mass_matrix
+            cg_solver_settings, mass_matrix, logger=logger
         )
         spde_matrix_inverse_component = components.InverseMatrixSolver(
-            amg_solver_settings, spde_matrix
+            amg_solver_settings, spde_matrix, logger=logger
         )
         # Bilaplacian precision:C^{-1} = A M^{-1} A
         precision_operator = components.PETScComponentComposition(

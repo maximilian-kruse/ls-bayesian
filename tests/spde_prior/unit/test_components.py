@@ -1,8 +1,11 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 from beartype.roar import BeartypeCallHintViolation
 from petsc4py import PETSc
 
+from ls_bayesian.common.logging import BaseLogger, LoggerSettings
 from ls_bayesian.spde_prior import components
 from tests.spde_prior import helpers
 
@@ -82,6 +85,27 @@ def test_inverse_matrix_solver_raises_on_non_convergence() -> None:
 
     with pytest.raises(RuntimeError, match="DIVERGED_MAX_IT"):
         apply_component(solver_component, np.ones(LAPLACIAN_DIM))
+
+
+# --------------------------------------------------------------------------------------------------
+def test_inverse_matrix_solver_logs_convergence_on_success(tmp_path: Path) -> None:
+    logfile_path = tmp_path / "inverse_matrix_solver.log"
+    logger_settings = LoggerSettings(print_to_console=False, logfile_path=logfile_path)
+    rng = np.random.default_rng(0)
+    spd_matrix = helpers.random_spd_matrix(rng, SPD_MATRIX_DIM)
+    right_hand_side = rng.random(SPD_MATRIX_DIM)
+
+    with BaseLogger(logger_settings, prefix="inverse_matrix_solver") as logger:
+        solver_component = components.InverseMatrixSolver(
+            solver_settings(PETSc.PC.Type.JACOBI),
+            helpers.petsc_matrix_from_dense(spd_matrix),
+            logger=logger,
+        )
+        apply_component(solver_component, right_hand_side)
+
+    log_content = logfile_path.read_text()
+    assert "Krylov solver converged" in log_content
+    assert "residual norm" in log_content
 
 
 # --------------------------------------------------------------------------------------------------

@@ -19,6 +19,8 @@ import numpy as np
 from beartype.vale import Is
 from petsc4py import PETSc
 
+from ls_bayesian.common.logging import BaseLogger
+
 _KSP_REASON_NAMES = {
     value: name
     for name, value in vars(PETSc.KSP.ConvergedReason).items()
@@ -416,15 +418,21 @@ class InverseMatrixSolver(PETScComponent):
 
     # ----------------------------------------------------------------------------------------------
     def __init__(
-        self, solver_settings: InverseMatrixSolverSettings, petsc_matrix: PETSc.Mat
+        self,
+        solver_settings: InverseMatrixSolverSettings,
+        petsc_matrix: PETSc.Mat,
+        logger: BaseLogger | None = None,
     ) -> None:
         """Initialize solver with given system matrix and solver config.
 
         Args:
             solver_settings (InverseMatrixSolverSettings): Settings for the solver.
             petsc_matrix (PETSc.Mat): System matrix to solve with, should be sparse.
+            logger (BaseLogger | None, optional): Logger for convergence diagnostics of successful
+                solves. Nothing is logged if `None`. Defaults to `None`.
         """
         self._petsc_matrix = petsc_matrix
+        self._logger = logger
         self._solver = PETSc.KSP().create(petsc_matrix.comm)
         self._solver.setOperators(petsc_matrix)
         self._solver.setType(solver_settings.solver_type)
@@ -458,6 +466,12 @@ class InverseMatrixSolver(PETScComponent):
                 f"Krylov solver did not converge: {_KSP_REASON_NAMES.get(converged_reason)} "
                 f"(reason {converged_reason}) after {self._solver.getIterationNumber()} "
                 "iterations. Consider adjusting the solver tolerances or iteration limit."
+            )
+        if self._logger is not None:
+            self._logger.debug(
+                f"Krylov solver converged: {_KSP_REASON_NAMES.get(converged_reason)} "
+                f"after {self._solver.getIterationNumber()} iterations, "
+                f"residual norm {self._solver.getResidualNorm()}."
             )
 
     # ----------------------------------------------------------------------------------------------

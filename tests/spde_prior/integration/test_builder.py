@@ -12,12 +12,15 @@ contrast, is pulled back to vertex space with the adjoint
 any degree, so it is checked over all FEM cases.
 """
 
+from pathlib import Path
+
 import dolfinx as dlx
 import numpy as np
 import pytest
 from beartype.roar import BeartypeCallHintViolation
 from mpi4py import MPI
 
+from ls_bayesian.common.logging import BaseLogger, LoggerSettings
 from ls_bayesian.spde_prior import builder, fem, strategies
 from tests.spde_prior import helpers
 
@@ -311,3 +314,24 @@ def test_bilaplacian_marginal_variance_matches_matern() -> None:
         rtol=0,
         atol=refinement_difference,
     )
+
+
+# --------------------------------------------------------------------------------------------------
+@SINGLE_CASE
+@NEUMANN_ONLY
+def test_builder_logger_reaches_solvers_and_prior(
+    fem_space_setup: helpers.FEMSpaceSetup, robin_const: float | None, tmp_path: Path
+) -> None:
+    """A logger passed to the builder reaches both the Krylov solvers and the built prior."""
+    logfile_path = tmp_path / "builder.log"
+    logger_settings = LoggerSettings(print_to_console=False, logfile_path=logfile_path)
+
+    with BaseLogger(logger_settings, prefix="builder") as logger:
+        built_prior_setup = helpers.build_bilaplacian_prior(
+            fem_space_setup, robin_const, seed=0, logger=logger
+        )
+        built_prior_setup.prior.evaluate_cost(built_prior_setup.mean_vector)
+
+    log_content = logfile_path.read_text()
+    assert "Krylov solver converged" in log_content
+    assert "prior_cost" in log_content

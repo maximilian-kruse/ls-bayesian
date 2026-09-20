@@ -24,6 +24,7 @@ from mpi4py import MPI
 from nbclient import NotebookClient
 from petsc4py import PETSc
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.spde_prior import builder, components, fem, spde_prior, strategies
 
 # ==================================================================================================
@@ -192,6 +193,7 @@ def create_exact_spde_prior(
     covariance_matrix: np.ndarray | None = None,
     covariance_factorization_matrix: np.ndarray | None = None,
     mean_vector: np.ndarray | None = None,
+    logger: BaseLogger | None = None,
 ) -> spde_prior.SPDEPrior:
     """Create an `SPDEPrior` from the dense operators of the setup, optionally replacing some."""
     precision_matrix = setup.precision_matrix if precision_matrix is None else precision_matrix
@@ -206,6 +208,7 @@ def create_exact_spde_prior(
         dense_interface_component(covariance_factorization_matrix),
         setup.converter,
         seed=seed,
+        logger=logger,
     )
 
 
@@ -224,6 +227,7 @@ def build_bilaplacian_prior(
     fem_space_setup: FEMSpaceSetup,
     robin_const: float | None,
     seed: int = 0,
+    logger: BaseLogger | None = None,
     **settings_overrides: object,
 ) -> BuiltPriorSetup:
     """Build a prior with KAPPA, TAU and explicit solver tolerances, settings can be overridden."""
@@ -243,7 +247,7 @@ def build_bilaplacian_prior(
     settings_arguments.update(settings_overrides)
     settings = builder.SPDEPriorSettings(**settings_arguments)
     prior = builder.SPDEPriorBuilder(
-        settings, strategies.BilaplacianComponentStrategy()
+        settings, strategies.BilaplacianComponentStrategy(), logger=logger
     ).build()
     return BuiltPriorSetup(fem_space_setup, robin_const, mean_vector, prior)
 

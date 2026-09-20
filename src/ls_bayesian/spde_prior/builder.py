@@ -19,6 +19,7 @@ from beartype.vale import Is
 from dolfinx.fem import petsc
 from petsc4py import PETSc
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.spde_prior import components, fem, spde_prior
 
 
@@ -117,6 +118,7 @@ class SPDEComponentStrategy(ABC):
         dof_map_matrix: PETSc.Mat,
         cg_solver_settings: components.InverseMatrixSolverSettings,
         amg_solver_settings: components.InverseMatrixSolverSettings,
+        logger: BaseLogger | None = None,
     ) -> tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
         r"""Build PETSc components for the prior's operators from FEM matrices.
 
@@ -129,6 +131,10 @@ class SPDEComponentStrategy(ABC):
                 CG-preconditioned inverse of the mass matrix.
             amg_solver_settings (components.InverseMatrixSolverSettings): Solver settings for the
                 AMG-preconditioned inverse of the SPDE matrix.
+            logger (BaseLogger | None, optional): Logger passed on to the
+                [`InverseMatrixSolver`][ls_bayesian.spde_prior.components.InverseMatrixSolver]
+                components for convergence diagnostics. Nothing is logged if `None`. Defaults to
+                `None`.
 
         Returns:
             tuple[components.PETScComponent, components.PETScComponent, components.PETScComponent]:
@@ -153,7 +159,10 @@ class SPDEPriorBuilder:
 
     # ----------------------------------------------------------------------------------------------
     def __init__(
-        self, settings: SPDEPriorSettings, component_strategy: SPDEComponentStrategy
+        self,
+        settings: SPDEPriorSettings,
+        component_strategy: SPDEComponentStrategy,
+        logger: BaseLogger | None = None,
     ) -> None:
         """Initialize the builder with the given settings and component strategy.
 
@@ -161,9 +170,14 @@ class SPDEPriorBuilder:
             settings (SPDEPriorSettings): Settings for the SPDE-based prior.
             component_strategy (SPDEComponentStrategy): Strategy for composing FEM matrices into
                 the prior's precision operator, covariance operator and sampling factor.
-
+            logger (BaseLogger | None, optional): Logger passed on to the built
+                [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] and to the
+                [`InverseMatrixSolver`][ls_bayesian.spde_prior.components.InverseMatrixSolver]
+                components assembled by the strategy. Nothing is logged if `None`. The caller owns
+                the logger's lifetime; the builder never constructs its own. Defaults to `None`.
         """
         self._component_strategy = component_strategy
+        self._logger = logger
         self._mesh = settings.mesh
         self._mean_vector = settings.mean_vector
         self._kappa = settings.kappa
@@ -211,6 +225,7 @@ class SPDEPriorBuilder:
                 dof_map_matrix,
                 self._cg_solver_settings,
                 self._amg_solver_settings,
+                logger=self._logger,
             )
         )
         precision_operator_interface, covariance_operator_interface, sampling_factor_interface = (
@@ -225,6 +240,7 @@ class SPDEPriorBuilder:
             sampling_factor_interface,
             converter,
             seed=self._seed,
+            logger=self._logger,
         )
         return spde_based_prior
 

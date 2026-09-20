@@ -6,10 +6,12 @@ roundoff. The prior itself only composes these operators with the vertex/DoF con
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from ls_bayesian.common.logging import BaseLogger, LoggerSettings
 from ls_bayesian.spde_prior import spde_prior
 from tests.spde_prior import helpers
 
@@ -273,6 +275,27 @@ def test_spde_prior_cost_raises_on_indefinite_precision(
 
     with pytest.raises(RuntimeError, match="Prior cost is negative"):
         prior.evaluate_cost(exact_prior_setup.mean_vector + CONSTANT_SHIFT)
+
+
+# --------------------------------------------------------------------------------------------------
+@SINGLE_CASE
+def test_spde_prior_logs_evaluations(
+    exact_prior_setup: helpers.ExactPriorSetup, tmp_path: Path
+) -> None:
+    logfile_path = tmp_path / "spde_prior.log"
+    logger_settings = LoggerSettings(print_to_console=False, logfile_path=logfile_path)
+    parameter_vector = exact_prior_setup.mean_vector + CONSTANT_SHIFT
+
+    with BaseLogger(logger_settings, prefix="spde_prior") as logger:
+        prior = helpers.create_exact_spde_prior(exact_prior_setup, seed=0, logger=logger)
+        prior.evaluate_cost(parameter_vector)
+        prior.evaluate_gradient(parameter_vector)
+        prior.evaluate_hessian_vector_product(parameter_vector)
+
+    log_content = logfile_path.read_text()
+    assert "prior_cost" in log_content
+    assert "prior_gradient" in log_content
+    assert "prior_hessian_vector_product" in log_content
 
 
 # --------------------------------------------------------------------------------------------------
