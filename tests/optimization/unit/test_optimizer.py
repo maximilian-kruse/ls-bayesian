@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from ls_bayesian.common.logging import BaseLogger, LoggerSettings
-from ls_bayesian.optimization import optimizer
 from ls_bayesian.optimization.optimizer import OptimizationHistory
 from tests.optimization import helpers
 
@@ -116,8 +115,9 @@ def test_log_header_and_iteration_write_expected_content(tmp_path: Path) -> None
     logger_settings = LoggerSettings(print_to_console=False, logfile_path=logfile_path)
 
     with BaseLogger(logger_settings, prefix="optimization") as logger:
-        optimizer.log_header(logger)
-        optimizer.log_iteration(logger, 1, 0.123, 4.5, 0.01)
+        optimizer_under_test = helpers.FakeOptimizer(logger=logger)
+        optimizer_under_test._log_header()
+        optimizer_under_test._log_iteration(1, 0.123, 4.5, 0.01)
 
     log_content = logfile_path.read_text()
     assert "Iteration" in log_content
@@ -129,5 +129,7 @@ def test_log_header_and_iteration_write_expected_content(tmp_path: Path) -> None
 
 # --------------------------------------------------------------------------------------------------
 def test_log_header_and_iteration_are_no_op_without_logger() -> None:
-    optimizer.log_header(None)
-    optimizer.log_iteration(None, 1, 0.1, 1.0, 1.0)
+    optimizer_under_test = helpers.FakeOptimizer()
+
+    optimizer_under_test._log_header()
+    optimizer_under_test._log_iteration(1, 0.1, 1.0, 1.0)

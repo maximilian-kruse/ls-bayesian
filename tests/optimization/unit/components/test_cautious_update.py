@@ -27,6 +27,20 @@ def test_epsilon_zero_reduces_to_standard_curvature_condition() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+def test_epsilon_zero_rejects_exactly_zero_curvature() -> None:
+    """The condition is documented (see `CautiousUpdateSettings.epsilon`) to reduce to the
+    strict standard curvature condition $(y, s) > 0$ at `epsilon = 0`, so a pair with exactly zero
+    curvature must be rejected, not accepted on equality."""
+    model = helpers.ZeroModel()
+    strategy = CautiousUpdateStrategy(CautiousUpdateSettings(epsilon=0.0, alpha=1.0))
+    gradient = np.array([1.0, 1.0])
+    s_zero_curvature = np.array([1.0, 0.0])
+    y_zero_curvature = np.array([0.0, 1.0])
+
+    assert not strategy.accept_update(s_zero_curvature, y_zero_curvature, gradient, model)
+
+
+# --------------------------------------------------------------------------------------------------
 def test_rejects_pair_violating_scaled_condition_for_positive_epsilon() -> None:
     model = helpers.ZeroModel()
     strategy = CautiousUpdateStrategy(CautiousUpdateSettings(epsilon=10.0, alpha=1.0))

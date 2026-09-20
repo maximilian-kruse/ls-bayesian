@@ -5,9 +5,9 @@ from ls_bayesian.optimization.algorithms.custom_lbfgs import (
     CorrectionPairStore,
     CustomLBFGSOptimizer,
     CustomLBFGSSettings,
-    two_loop_recursion,
 )
 from ls_bayesian.optimization.components.cautious_update import (
+    AlwaysAcceptStrategy,
     CautiousUpdateSettings,
     CautiousUpdateStrategy,
 )
@@ -53,11 +53,12 @@ def test_store_iterates_in_both_documented_orders() -> None:
 
 # ==================================================================================================
 def test_two_loop_recursion_with_no_pairs_is_steepest_descent() -> None:
+    optimizer = _default_optimizer()
     store = CorrectionPairStore(memory_size=5)
     gradient = np.array([1.0, -2.0, 3.0])
     model = helpers.ZeroModel()
 
-    direction = two_loop_recursion(gradient, store, model, lambda vector: vector)
+    direction = optimizer._two_loop_recursion(gradient, store, model)
 
     np.testing.assert_allclose(direction, -gradient)
 
@@ -66,9 +67,10 @@ def test_two_loop_recursion_with_no_pairs_is_steepest_descent() -> None:
 def test_two_loop_recursion_matches_closed_form_bfgs_update_with_one_pair() -> None:
     """With one correction pair `(s, y)` and the identity seed, the two-loop recursion is
     mathematically equivalent to one step of the explicit BFGS inverse-Hessian update
-    `H_1 = (I - rho s y^T) H_0 (I - rho y s^T) + rho s s^T` (`optimization.tex`, eq. 29/43)
-    applied to the gradient; this test checks that equivalence directly against the closed-form
-    matrix, in the Euclidean inner product for an independently-computable reference."""
+    `H_1 = (I - rho s y^T) H_0 (I - rho y s^T) + rho s s^T` applied to the gradient; this test
+    checks that equivalence directly against the closed-form matrix, in the Euclidean inner
+    product for an independently-computable reference."""
+    optimizer = _default_optimizer()
     model = helpers.ZeroModel()
     state_difference = np.array([1.0, 0.5])
     gradient_difference = np.array([0.3, 0.8])
@@ -79,7 +81,7 @@ def test_two_loop_recursion_matches_closed_form_bfgs_update_with_one_pair() -> N
     )
     gradient = np.array([0.2, -0.4])
 
-    direction = two_loop_recursion(gradient, store, model, lambda vector: vector)
+    direction = optimizer._two_loop_recursion(gradient, store, model)
 
     identity = np.eye(2)
     updated_inverse_hessian = (
@@ -157,3 +159,21 @@ def test_zero_iterations_when_initial_guess_already_converged() -> None:
 
     assert result.success
     assert result.num_iterations == 0
+
+
+# --------------------------------------------------------------------------------------------------
+def test_raises_on_non_positive_curvature_pair_accepted_by_a_permissive_strategy() -> None:
+    """`AlwaysAcceptStrategy` does not enforce the curvature condition that keeps the
+    limited-memory inverse-Hessian approximation well-defined and positive definite. On a linear
+    objective, the gradient never changes between iterates, so the very first correction pair has
+    exactly zero curvature $(s, y) = 0$: the optimizer must reject it explicitly rather than
+    letting `1.0 / (s, y)` raise `ZeroDivisionError`."""
+    optimizer = CustomLBFGSOptimizer(
+        CustomLBFGSSettings(),
+        ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
+        AlwaysAcceptStrategy(),
+    )
+    model = helpers.LinearModel(np.array([1.0, 1.0]))
+
+    with pytest.raises(ValueError, match="non-positive curvature"):
+        optimizer.run(np.zeros(2), model)
