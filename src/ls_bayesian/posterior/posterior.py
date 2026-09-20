@@ -88,12 +88,15 @@ class LogPosterior:
         Returns:
             float: $J(m)$.
         """
-        self._log_evaluation_start("Cost evaluation", parameter_vector)
+        self._log_debug_evaluation_start("Cost evaluation", parameter_vector)
         likelihood_cost, prior_cost = self._compute_cost_components(parameter_vector)
         total_cost = likelihood_cost + prior_cost
-        self._log_message(f"likelihood_cost: {likelihood_cost}")
-        self._log_message(f"prior_cost: {prior_cost}")
-        self._log_message(f"total_cost: {total_cost}")
+        self._log_debug_message(f"likelihood_cost: {likelihood_cost}")
+        self._log_debug_message(f"prior_cost: {prior_cost}")
+        self._log_debug_message(f"total_cost: {total_cost}")
+        self._warn_if_not_finite("likelihood_cost", likelihood_cost)
+        self._warn_if_not_finite("prior_cost", prior_cost)
+        self._warn_if_not_finite("total_cost", total_cost)
         return total_cost
 
     # ----------------------------------------------------------------------------------------------
@@ -108,10 +111,12 @@ class LogPosterior:
         Returns:
             tuple[float, float]: $(\Phi(F(m)), R(m))$.
         """
-        self._log_evaluation_start("Cost evaluation", parameter_vector)
+        self._log_debug_evaluation_start("Cost evaluation", parameter_vector)
         likelihood_cost, prior_cost = self._compute_cost_components(parameter_vector)
-        self._log_message(f"likelihood_cost: {likelihood_cost}")
-        self._log_message(f"prior_cost: {prior_cost}")
+        self._log_debug_message(f"likelihood_cost: {likelihood_cost}")
+        self._log_debug_message(f"prior_cost: {prior_cost}")
+        self._warn_if_not_finite("likelihood_cost", likelihood_cost)
+        self._warn_if_not_finite("prior_cost", prior_cost)
         return likelihood_cost, prior_cost
 
     # ----------------------------------------------------------------------------------------------
@@ -129,12 +134,15 @@ class LogPosterior:
         Returns:
             np.ndarray[tuple[int], np.dtype[np.float64]]: $\nabla_m J(m)$.
         """
-        self._log_evaluation_start("Gradient evaluation", parameter_vector)
+        self._log_debug_evaluation_start("Gradient evaluation", parameter_vector)
         likelihood_gradient, prior_gradient = self._compute_gradient_components(parameter_vector)
         total_gradient = likelihood_gradient + prior_gradient
-        self._log_vector_statistics("likelihood_gradient", likelihood_gradient)
-        self._log_vector_statistics("prior_gradient", prior_gradient)
-        self._log_vector_statistics("total_gradient", total_gradient)
+        self._log_debug_vector_statistics("likelihood_gradient", likelihood_gradient)
+        self._log_debug_vector_statistics("prior_gradient", prior_gradient)
+        self._log_debug_vector_statistics("total_gradient", total_gradient)
+        self._warn_if_not_finite_vector("likelihood_gradient", likelihood_gradient)
+        self._warn_if_not_finite_vector("prior_gradient", prior_gradient)
+        self._warn_if_not_finite_vector("total_gradient", total_gradient)
         return total_gradient
 
     # ----------------------------------------------------------------------------------------------
@@ -156,10 +164,12 @@ class LogPosterior:
                 $(\nabla_m F(m))^T \nabla_u \Phi(u)$ and the prior contribution $\nabla_m R(m)$,
                 each the same shape as the parameter. Neither array aliases the cache.
         """
-        self._log_evaluation_start("Gradient evaluation", parameter_vector)
+        self._log_debug_evaluation_start("Gradient evaluation", parameter_vector)
         likelihood_gradient, prior_gradient = self._compute_gradient_components(parameter_vector)
-        self._log_vector_statistics("likelihood_gradient", likelihood_gradient)
-        self._log_vector_statistics("prior_gradient", prior_gradient)
+        self._log_debug_vector_statistics("likelihood_gradient", likelihood_gradient)
+        self._log_debug_vector_statistics("prior_gradient", prior_gradient)
+        self._warn_if_not_finite_vector("likelihood_gradient", likelihood_gradient)
+        self._warn_if_not_finite_vector("prior_gradient", prior_gradient)
         return likelihood_gradient.copy(), prior_gradient
 
     # ----------------------------------------------------------------------------------------------
@@ -217,8 +227,11 @@ class LogPosterior:
         """Return the forward solution $F(m)$, solving the forward problem only if not cached."""
         solution_vector = self._cache.retrieve_quantity(_CachedQuantity.SOLUTION, parameter_vector)
         if solution_vector is None:
+            self._log_debug_message("Cache miss for SOLUTION, solving forward problem.")
             solution_vector = self._parameter_to_solution_map.evaluate_forward(parameter_vector)
             self._cache.store_quantity(_CachedQuantity.SOLUTION, parameter_vector, solution_vector)
+        else:
+            self._log_debug_message("Cache hit for SOLUTION.")
         return solution_vector
 
     # ----------------------------------------------------------------------------------------------
@@ -230,6 +243,9 @@ class LogPosterior:
             _CachedQuantity.LIKELIHOOD_SOLUTION_GRADIENT, parameter_vector
         )
         if likelihood_solution_gradient is None:
+            self._log_debug_message(
+                "Cache miss for LIKELIHOOD_SOLUTION_GRADIENT, evaluating gradient."
+            )
             solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector)
             likelihood_solution_gradient = self._likelihood.evaluate_gradient(solution_vector)
             self._cache.store_quantity(
@@ -237,6 +253,8 @@ class LogPosterior:
                 parameter_vector,
                 likelihood_solution_gradient,
             )
+        else:
+            self._log_debug_message("Cache hit for LIKELIHOOD_SOLUTION_GRADIENT.")
         return likelihood_solution_gradient
 
     # ----------------------------------------------------------------------------------------------
@@ -248,6 +266,9 @@ class LogPosterior:
             _CachedQuantity.LIKELIHOOD_PARAMETER_GRADIENT, parameter_vector
         )
         if likelihood_parameter_gradient is None:
+            self._log_debug_message(
+                "Cache miss for LIKELIHOOD_PARAMETER_GRADIENT, evaluating gradient."
+            )
             solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector)
             likelihood_solution_gradient = self._retrieve_or_compute_likelihood_solution_gradient(
                 parameter_vector
@@ -260,28 +281,54 @@ class LogPosterior:
                 parameter_vector,
                 likelihood_parameter_gradient,
             )
+        else:
+            self._log_debug_message("Cache hit for LIKELIHOOD_PARAMETER_GRADIENT.")
         return likelihood_parameter_gradient
 
     # ----------------------------------------------------------------------------------------------
-    def _log_evaluation_start(
+    def _log_debug_evaluation_start(
         self, message: str, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> None:
         """Log the start of an evaluation and the parameter it is evaluated at."""
-        self._log_message(message)
-        self._log_vector_statistics("parameter_vector", parameter_vector)
+        self._log_debug_message(message)
+        self._log_debug_vector_statistics("parameter_vector", parameter_vector)
 
     # ----------------------------------------------------------------------------------------------
-    def _log_message(self, message: str) -> None:
+    def _log_debug_message(self, message: str) -> None:
         """Log a message, if a logger is attached."""
         if self._logger is not None:
-            self._logger.info(message)
+            self._logger.debug(message)
 
     # ----------------------------------------------------------------------------------------------
-    def _log_vector_statistics(
+    def _log_debug_vector_statistics(
         self, name: str, vector: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> None:
         """Log value range and Euclidean norm of a vector, if a logger is attached."""
         if self._logger is not None:
-            self._logger.info(
+            self._logger.debug(
                 f"{name} in: [{np.min(vector)}, {np.max(vector)}], norm: {np.linalg.norm(vector)}"
             )
+
+    # ----------------------------------------------------------------------------------------------
+    def _warn_if_not_finite(self, name: str, value: float) -> None:
+        """Log a warning if a scalar value is not finite, if a logger is attached.
+
+        A non-finite cost usually signals a diverged forward solve or a numerically unstable
+        likelihood/prior evaluation; this is only a warning, not an error, since a line search may
+        legitimately probe points where the cost is temporarily non-finite before rejecting them.
+        """
+        if self._logger is not None and not np.isfinite(value):
+            self._logger.warning(f"{name} is not finite: {value}.")
+
+    # ----------------------------------------------------------------------------------------------
+    def _warn_if_not_finite_vector(
+        self, name: str, vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> None:
+        """Log a warning if any vector entry is not finite, if a logger is attached.
+
+        See
+        [`_warn_if_not_finite`][ls_bayesian.posterior.posterior.LogPosterior._warn_if_not_finite]
+        for why this is a warning rather than an error.
+        """
+        if self._logger is not None and not np.all(np.isfinite(vector)):
+            self._logger.warning(f"{name} contains non-finite values.")

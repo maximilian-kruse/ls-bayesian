@@ -45,8 +45,9 @@ MAX_PROBLEM_DIMENSION = 25
 # Normwise relative error of direct dense and sparse computations, bounded by
 # cond * n * eps <= 1e2 * 25 * 2.2e-16 ~ 5.5e-13.
 ROUNDOFF_TOLERANCE = 1e-12
-# Relative residual reduction of the Krylov solves in the tests, identical to the builder default.
-SOLVER_RELATIVE_TOLERANCE = builder.DEFAULT_SOLVER_RELATIVE_TOLERANCE
+# Relative residual reduction of the Krylov solves in the tests, identical to
+# SPDEPriorSettings' cg_relative_tolerance/amg_relative_tolerance defaults.
+SOLVER_RELATIVE_TOLERANCE = 1e-12
 # Maximum number of Krylov solves involved in a tested relation (C P = I uses three).
 MAX_NUM_KRYLOV_SOLVES = 3
 # Normwise relative error of relations involving Krylov solves. PETSc's CG stops on the

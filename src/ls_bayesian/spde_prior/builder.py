@@ -21,20 +21,6 @@ from petsc4py import PETSc
 
 from ls_bayesian.spde_prior import components, fem, spde_prior
 
-# Relative residual reduction of the inner Krylov solves. The precision, covariance and sampling
-# operators are applied through these solves, so their accuracy bounds the consistency of cost,
-# gradient and Hessian-vector products of the prior. The value keeps this error far below typical
-# optimizer and finite difference tolerances, while being attainable in double precision for the
-# well-conditioned, preconditioned mass and SPDE systems.
-DEFAULT_SOLVER_RELATIVE_TOLERANCE = 1e-12
-# Safeguard against stagnating solves. The preconditioned systems typically converge in far fewer
-# iterations, and exceeding the limit raises an error instead of returning an inaccurate result.
-DEFAULT_SOLVER_MAX_ITERATIONS = 1000
-# Names of the continuous Lagrange element family in basix. The SPDE forms contain no interior
-# penalty (jump) terms, so they are only a valid discretization for H^1-conforming, i.e.
-# continuous, elements.
-LAGRANGE_FAMILY_NAMES = ("Lagrange", "P")
-
 
 # ==================================================================================================
 @dataclass
@@ -59,23 +45,30 @@ class SPDEPriorSettings:
             setup. The family has to be continuous Lagrange, i.e. one of
             `LAGRANGE_FAMILY_NAMES`. Defaults to `("Lagrange", 1)`.
         cg_relative_tolerance (Real): Relative tolerance for the CG solver used in the
-            application of the precision operator. Defaults to
-            `DEFAULT_SOLVER_RELATIVE_TOLERANCE`.
+            application of the precision operator. Defaults to `1e-12`: the precision, covariance
+            and sampling operators are applied through these solves, so their accuracy bounds the
+            consistency of cost, gradient and Hessian-vector products of the prior. The value
+            keeps this error far below typical optimizer and finite difference tolerances, while
+            being attainable in double precision for the well-conditioned, preconditioned mass and
+            SPDE systems.
         cg_absolute_tolerance (Real | None): Absolute tolerance for the CG solver used in the
             application of the precision operator. If `None`, the PETSc default of $10^{-50}$
             is used, i.e. effectively only the relative criterion applies. Defaults to `None`.
         cg_max_iterations (int): Maximum number of iterations for the CG solver used in the
-            application of the precision operator. Defaults to `DEFAULT_SOLVER_MAX_ITERATIONS`.
+            application of the precision operator. Defaults to `1000`, a safeguard against
+            stagnating solves: the preconditioned systems typically converge in far fewer
+            iterations, and exceeding the limit raises an error instead of returning an inaccurate
+            result.
         amg_relative_tolerance (Real): Relative tolerance for the AMG-preconditioned solver used
             in the application of the covariance operator and its factorization. Defaults to
-            `DEFAULT_SOLVER_RELATIVE_TOLERANCE`.
+            `1e-12`, for the same reasons as `cg_relative_tolerance`.
         amg_absolute_tolerance (Real | None): Absolute tolerance for the AMG-preconditioned
             solver used in the application of the covariance operator and its factorization. If
             `None`, the PETSc default of $10^{-50}$ is used, i.e. effectively only the relative
             criterion applies. Defaults to `None`.
         amg_max_iterations (int): Maximum number of iterations for the AMG-preconditioned solver
             used in the application of the covariance operator and its factorization. Defaults
-            to `DEFAULT_SOLVER_MAX_ITERATIONS`.
+            to `1000`, for the same reasons as `cg_max_iterations`.
     """
 
     mesh: dlx.mesh.Mesh
@@ -85,15 +78,15 @@ class SPDEPriorSettings:
     robin_const: Annotated[Real, Is[lambda x: x >= 0]] | None = None
     seed: int = 0
     fe_data: tuple[
-        Annotated[str, Is[lambda family: family in LAGRANGE_FAMILY_NAMES]],
+        Annotated[str, Is[lambda family: family in ("Lagrange", "P")]],
         Annotated[int, Is[lambda x: x > 0]],
     ] = ("Lagrange", 1)
-    cg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_SOLVER_RELATIVE_TOLERANCE
+    cg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = 1e-12
     cg_absolute_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
-    cg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_SOLVER_MAX_ITERATIONS
-    amg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = DEFAULT_SOLVER_RELATIVE_TOLERANCE
+    cg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = 1000
+    amg_relative_tolerance: Annotated[Real, Is[lambda x: x > 0]] = 1e-12
     amg_absolute_tolerance: Annotated[Real, Is[lambda x: x > 0]] | None = None
-    amg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = DEFAULT_SOLVER_MAX_ITERATIONS
+    amg_max_iterations: Annotated[int, Is[lambda x: x > 0]] = 1000
 
 
 # ==================================================================================================
