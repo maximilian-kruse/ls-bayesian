@@ -299,7 +299,7 @@ class FakeHessianOptimizer(FakeOptimizer):
 # ==================================================================================================
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPTIMIZATION_TUTORIALS_DIR = REPO_ROOT / "tutorials" / "optimization"
-SCIPY_LBFGS_NOTEBOOK = OPTIMIZATION_TUTORIALS_DIR / "scipy_lbfgs.ipynb"
+SCIPY_LBFGS_NOTEBOOK = OPTIMIZATION_TUTORIALS_DIR / "scipy_lbfgsb.ipynb"
 CUSTOM_LBFGS_NOTEBOOK = OPTIMIZATION_TUTORIALS_DIR / "custom_lbfgs.ipynb"
 NOTEBOOK_EXECUTION_TIMEOUT_SECONDS = 120
 

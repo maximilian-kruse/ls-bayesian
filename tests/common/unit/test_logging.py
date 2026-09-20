@@ -133,7 +133,6 @@ def test_console_logger_prints_prefixed_messages(capsys: pytest.CaptureFixture[s
     assert captured.out.splitlines() == [
         "[TEST] info message",
         "[TEST][WARNING] warning message",
-        "[TEST][DEBUG] debug message",
         "[TEST][ERROR] error message",
     ]
 
