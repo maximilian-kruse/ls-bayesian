@@ -61,10 +61,19 @@ class MALAAlgorithm(MCMCAlgorithm):
     to have been absorbed into both beforehand).
 
     Unlike [`PCNAlgorithm`][ls_bayesian.mcmc.algorithms.pcn.PCNAlgorithm], this class has no
-    generalized-approximation counterpart: `target_model`'s potential is always relative to
-    `proposal_measure` itself, i.e. `proposal_measure` must be the target's actual reference
-    measure $\mu_0$ (`evaluate_cost` identically $0$). A generalized-approximation acceptance
-    formula for MALA, analogous to Pinski et al. (2015) for pCN, has not been established.
+    Pinski-et-al.-style generalized-approximation counterpart: `target_model`'s potential is
+    always relative to `proposal_measure` itself, i.e. `proposal_measure` must be the target's
+    actual reference measure $\mu_0$ (`evaluate_cost` identically $0$). Re-expressing $\Phi$
+    relative to a different Gaussian $\nu \neq \mu_0$, as `PCNAlgorithm` does, would additionally
+    require the *gradient* of $\nu$'s correction potential -- which
+    [`ProposalMeasure`][ls_bayesian.mcmc.measures.ProposalMeasure] does not expose, since pCN's
+    acceptance probability never needs it. A *different* generalization to a non-prior Gaussian
+    does exist and is implemented separately: see
+    [`PMALAAlgorithm`][ls_bayesian.mcmc.algorithms.pmala.PMALAAlgorithm],
+    which keeps $\Phi$ relative to $\mu_0$ and instead uses the alternative Gaussian purely as a
+    preconditioner (Beskos, Girolami, Lan, Farrell, Stuart, 2017) -- naively substituting a
+    non-prior `proposal_measure` into *this* class does not recover that algorithm and is not a
+    valid sampler for $\mu$.
 
     Methods:
         compute_step: Compute one step of MCMC.
