@@ -8,6 +8,7 @@ here before the reference-value comparison is even reached.
 
 import pytest
 
+from tests import notebook_helpers
 from tests.optimization import helpers
 
 pytestmark = pytest.mark.integration
@@ -60,8 +61,10 @@ CUSTOM_LBFGS_NATURAL_DISTANCE_BOUND = 1e-10
 # ==================================================================================================
 def test_scipy_lbfgs_tutorial_notebook_runs_and_converges() -> None:
     """Execute the scipy_lbfgs tutorial notebook and check its convergence results."""
-    result_values = helpers.execute_notebook_and_extract_values(
-        helpers.SCIPY_LBFGS_NOTEBOOK, SCIPY_LBFGS_RESULT_EXPRESSIONS
+    result_values = notebook_helpers.execute_notebook_and_extract_values(
+        helpers.SCIPY_LBFGS_NOTEBOOK,
+        SCIPY_LBFGS_RESULT_EXPRESSIONS,
+        timeout_seconds=helpers.NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
     )
 
     assert result_values["success"] == SCIPY_LBFGS_REFERENCE_VALUES["success"]
@@ -75,8 +78,10 @@ def test_custom_lbfgs_tutorial_notebook_runs_and_converges() -> None:
     """Execute the custom_lbfgs tutorial notebook and check both runs' convergence results, and
     that the Hessian-matched inner product converges in strictly fewer iterations than the
     Euclidean one."""
-    result_values = helpers.execute_notebook_and_extract_values(
-        helpers.CUSTOM_LBFGS_NOTEBOOK, CUSTOM_LBFGS_RESULT_EXPRESSIONS
+    result_values = notebook_helpers.execute_notebook_and_extract_values(
+        helpers.CUSTOM_LBFGS_NOTEBOOK,
+        CUSTOM_LBFGS_RESULT_EXPRESSIONS,
+        timeout_seconds=helpers.NOTEBOOK_EXECUTION_TIMEOUT_SECONDS,
     )
 
     assert (
