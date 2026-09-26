@@ -1,82 +1,76 @@
-# Project: ls-bayesian
+# CLAUDE.md
 
-A modular toolbox for large-scale bayesian inverse problems.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Working procedure
-For non-trivial tasks: inspect the relevant code/tests, identify existing design
-and conventions, form a short plan, implement the smallest appropriate change,
-add/update tests, run relevant checks, review the final diff.
+# ls-bayesian
+Modular toolbox for large-scale Bayesian inverse problems (Python ≥3.14, NumPy/SciPy,
+dolfinx FEM priors, zarr MCMC storage).
+
+**Procedure (non-trivial tasks):** inspect code/tests and conventions → short plan →
+smallest appropriate change → tests → run checks → review diff.
 
 ## Environment (pixi)
-- NEVER use bare `python`, `pip`, `conda` or `uv` — always `pixi run <task>` /
-  `pixi run python ...`.
-- Add dependencies with `pixi add <pkg>` (conda-forge) or `pixi add --pypi <pkg>`
-  only if not on conda-forge. Ask before adding any new dependency.
-- Never hand-edit `pixi.lock`; commit it together with `pixi.toml`/`pyproject.toml`.
+- NEVER bare `python`/`pip`/`conda`/`uv`; always `pixi run ...`. Ask before adding
+  deps (`pixi add`, `--pypi` only if not on conda-forge). Never hand-edit `pixi.lock`;
+  commit it with `pyproject.toml` (holds all pixi config; no `pixi.toml`).
+- Envs: `default` (numpy/scipy/beartype), `prior` (+dolfinx), `mcmc` (+zarr), `dev`
+  (+ruff, jupyter, plotting), `test` (all + pytest). Tools need `-e`:
+  - `pixi run -e dev ruff check src tests` / `ruff format src tests`
+  - `pixi run -e test pytest [path::test] [-m "unit and not slow"] [-n auto]`
+  - MPI: `pixi run -e test mpirun -n 2 python -m pytest tests/spde_prior/parallel -m parallel -p no:cacheprovider`
 
-## Design principles
-- Priorities, in order: numerical correctness > reproducibility >
-  maintainability/clear APIs > performance > developer convenience. Never trade
-  a higher priority for a lower one.
-- Prefer explicit, readable code over clever abstractions; avoid unnecessary
-  classes. Prefer composition over inheritance and small composable functions
-  over large classes — use a class only when there is real state to manage.
-- Facilitate composition via builder/strategy/template patterns; give each
-  logical degree of freedom its own component (separation of concerns).
-- Keep computation pure (inputs -> outputs, no hidden global state, no
-  in-place mutation of arguments); separate I/O from computation.
-- Validate inputs once, at the public API, raising `ValueError` with the
-  offending value; don't re-validate internally.
-- Defaults must be safe and explicit; no magic numbers — name constants and
-  cite their source.
-- Public API can be broken if useful.
+## Architecture
+Subpackages in `src/ls_bayesian/` never import each other (only `common/`). Each
+defines the interfaces it consumes as ABCs; application-layer adapters (tutorials,
+test helpers) wire concrete pieces together.
+- `spde_prior/`: SPDE Gaussian priors on dolfinx; `SPDEPriorBuilder` + component strategies.
+- `posterior/`: `LogPosterior` = `Likelihood` + `ParameterToSolutionMap` + `GaussianPrior`
+  (mirrors `SPDEPrior` API); caches forward/adjoint quantities.
+- `optimization/`: `BaseOptimizer` (template over `_run_impl`) on `OptimizationModel`;
+  L-BFGS variants built from strategy components.
+- `mcmc/`: `Sampler` drives `MCMCAlgorithm`s (pCN, MALA, pMALA); proposal reference
+  measure (`measures.py`) is deliberately separate from `GaussianPrior`.
+- `lowrank/`: placeholder.
 
-## Coding conventions and style
-- Python target per pyproject.toml; google-style docstrings; type hints on all
-  methods/functions. Use `@override` where appropriate.
-- Lint/format with ruff; no `# noqa` or other suppressions without a concrete,
-  documented reason.
-- Vectorise with NumPy/SciPy — no Python loops over array elements. Accept
-  array-likes, return NumPy arrays, converting once at the boundary via
-  `np.asarray`.
-- Never silently change numerical conventions, units, array shapes, or dtypes.
-- Compare floats with `np.testing.assert_allclose`, never `==`. Seed all
-  randomness with `np.random.default_rng(seed)` in tests and examples.
-- Use descriptive names (verbosity is fine). Use `beartype`
-  (`beartype.vale.Is`) for runtime-validated constraints on public API type
-  hints instead of manual `if`/`raise` checks where a `Vale` predicate suffices.
-- Import unambiguous names directly; otherwise use module-level imports.
+Tutorial notebooks (`tutorials/<sub>/`) are executed as integration tests via
+`tests/notebook_helpers.py` — keep them runnable. Tests per subpackage: `unit/`,
+`integration/` (anything running a full loop), `parallel/`; helpers in `helpers.py`,
+fixtures only in `conftest.py`.
 
-## Documentation
-- Docstrings on every function/method/class/module, explaining concepts, not
-  just restating the implementation. Cover: what it does, the mathematical
-  meaning of important parameters, expected shapes/dtypes, assumptions, and
-  numerical considerations.
-- Cross-reference with mkdocstrings-style links using the full path under
-  `ls_bayesian`, e.g. `` [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] ``
-  (`docs/` is a placeholder for a future mkdocstrings/mkdocs site).
-- Use LaTeX math (`$...$`, raw `r"""` docstrings) for notation.
+## Design
+- Priorities: numerical correctness > reproducibility > clear APIs > performance >
+  convenience. Never trade higher for lower.
+- Explicit over clever; composition over inheritance; small functions; classes only
+  for real state. Builder/strategy/template patterns, one component per degree of freedom.
+- Pure computation (no hidden globals, no mutating arguments); I/O separate.
+- Validate once at the public API (`ValueError` with offending value), preferring
+  `beartype.vale.Is` type hints over manual checks.
+- Safe, explicit defaults; no magic numbers — name constants and cite source.
+- Breaking public API is fine if useful.
+
+## Code style
+- Google docstrings, full type hints, `@override`. Ruff; no `# noqa` without documented reason.
+- Vectorise (no loops over elements); accept array-likes, `np.asarray` once at the
+  boundary, return NumPy arrays. Never silently change conventions, units, shapes, dtypes.
+- Descriptive names. Import unambiguous names directly, else module-level imports.
+
+## Docs
+- Docstring everything, explaining concepts: purpose, mathematical meaning of key
+  parameters, shapes/dtypes, assumptions, numerics. LaTeX (`$...$`, raw `r"""`).
+- mkdocstrings links with full path, e.g.
+  `` [`SPDEPrior`][ls_bayesian.spde_prior.spde_prior.SPDEPrior] ``.
 
 ## Testing
-- Don't write tests until explicitly asked; test with pytest. Every
-  behavioral change needs appropriate tests; run relevant tests after changes.
-- Prefer tests of mathematical properties/invariants and known analytical
-  cases over pure implementation-detail tests.
-- NEVER loosen tolerances, skip tests, or change reference values to make
-  tests pass — if a numerical result changes, stop and explain why.
+- Don't write tests until asked; every behavioral change needs tests; run relevant ones.
+- Prefer mathematical invariants/analytical cases over implementation details.
+  `assert_allclose` for floats; seed via `np.random.default_rng(seed)`.
+- NEVER loosen tolerances, skip tests, or change reference values to pass — if a
+  numerical result changes, stop and explain why.
 
-## Scientific / numerical code
-- When implementing a method from a paper, cite it in the docstring and note
-  any deviations from the published algorithm.
-- Before touching an algorithm: understand its mathematical formulation,
-  preserve existing mathematical semantics, check shapes/broadcasting/dtype/
-  boundary conditions/indexing, consider numerical stability/conditioning,
-  and update tests for the behavior being changed.
-- Don't "fix" unusual-looking mathematical code without first determining why
-  it's written that way, and don't replace a mathematically justified
-  implementation with a simpler heuristic without explicitly discussing the
-  trade-off.
-
-## Performance
-- Don't optimize prematurely — establish correctness with tests first, and
-  don't introduce complicated optimizations without evidence they matter.
+## Numerical code
+- Cite papers in docstrings and note deviations.
+- Before changing an algorithm: understand the math, preserve semantics, check
+  shapes/broadcasting/dtype/boundaries/indexing and conditioning, update tests.
+- Don't "fix" unusual math without knowing why it's there, or swap a justified method
+  for a heuristic without discussing the trade-off.
+- No premature or unproven optimization; correctness first.
