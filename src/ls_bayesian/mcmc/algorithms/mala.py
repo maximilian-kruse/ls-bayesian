@@ -11,8 +11,10 @@ from typing import Annotated, override
 import numpy as np
 from beartype.vale import Is
 
+from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.mcmc.algorithm import MCMCAlgorithm
-from ls_bayesian.mcmc.measures import ProposalMeasure, TargetMeasure
+from ls_bayesian.mcmc.measures import DifferentiableTargetMeasure
+from ls_bayesian.mcmc.model import MCMCModel
 
 
 # ==================================================================================================
@@ -56,24 +58,21 @@ class MALAAlgorithm(MCMCAlgorithm):
     $$
 
     Inner products above are the ordinary Euclidean dot product of coefficient vectors (Cotter et
-    al., 2013, Sec. 6): `proposal_measure` and `target_model`'s gradient must therefore already
+    al., 2013, Sec. 6): `model.reference` and `model.target`'s gradient must therefore already
     be expressed on the same coefficient space (e.g. any finite-element mass-matrix weighting has
     to have been absorbed into both beforehand).
 
     Unlike [`PCNAlgorithm`][ls_bayesian.mcmc.algorithms.pcn.PCNAlgorithm], this class has no
-    Pinski-et-al.-style generalized-approximation counterpart: `target_model`'s potential is
-    always relative to `proposal_measure` itself, i.e. `proposal_measure` must be the target's
-    actual reference measure $\mu_0$ (`evaluate_cost` identically $0$). Re-expressing $\Phi$
-    relative to a different Gaussian $\nu \neq \mu_0$, as `PCNAlgorithm` does, would additionally
-    require the *gradient* of $\nu$'s correction potential -- which
-    [`ProposalMeasure`][ls_bayesian.mcmc.measures.ProposalMeasure] does not expose, since pCN's
-    acceptance probability never needs it. A *different* generalization to a non-prior Gaussian
-    does exist and is implemented separately: see
+    Pinski-et-al.-style generalized-approximation counterpart: `model.target`'s potential is
+    always relative to `model.reference` itself, i.e. this class requires `model.reference` and
+    ignores `model.approximation` if also given -- re-expressing $\Phi$ relative to a different
+    Gaussian $\nu \neq \mu_0$, as `PCNAlgorithm` does, would additionally require the *gradient* of
+    $\nu$'s correction potential $\rho$, which the acceptance probability below never computes,
+    since pCN's does not need it. A *different* generalization to an alternative Gaussian does
+    exist and is implemented separately: see
     [`PMALAAlgorithm`][ls_bayesian.mcmc.algorithms.pmala.PMALAAlgorithm],
     which keeps $\Phi$ relative to $\mu_0$ and instead uses the alternative Gaussian purely as a
-    preconditioner (Beskos, Girolami, Lan, Farrell, Stuart, 2017) -- naively substituting a
-    non-prior `proposal_measure` into *this* class does not recover that algorithm and is not a
-    valid sampler for $\mu$.
+    preconditioner (Beskos, Girolami, Lan, Farrell, Stuart, 2017).
 
     Methods:
         compute_step: Compute one step of MCMC.
@@ -86,24 +85,37 @@ class MALAAlgorithm(MCMCAlgorithm):
     # ----------------------------------------------------------------------------------------------
     def __init__(
         self,
-        target_model: TargetMeasure,
-        proposal_measure: ProposalMeasure,
+        model: MCMCModel,
         step_width: Annotated[Real, Is[lambda x: x > 0]],
+        logger: BaseLogger | None = None,
     ) -> None:
         r"""Initialize the MALA algorithm.
 
         Args:
-            target_model (TargetMeasure): Potential $\Phi$ of the actual target and its gradient,
-                relative to `proposal_measure`.
-            proposal_measure (ProposalMeasure): The target's actual reference measure $\mu_0 =
-                \mathcal N(\bar u, C)$ (`evaluate_cost` identically $0$), expressed on the same
-                coefficient space as `target_model`'s gradient.
+            model (MCMCModel): Target (must be a `DifferentiableTargetMeasure`) and reference
+                measure $\mu_0 = \mathcal N(\bar u, C)$, expressed on the same coefficient space as
+                `model.target`'s gradient. `model.approximation`, if given, is ignored.
             step_width (Real): Step size $\delta > 0$. Smaller values increase acceptance; larger
                 values explore faster until stability or acceptance deteriorates.
+            logger (BaseLogger | None, optional): Logger for a one-time info message noting that
+                `model.approximation` is ignored, when given alongside `model.reference`. Nothing
+                is logged if `None`. Defaults to `None`.
+
+        Raises:
+            ValueError: If `model.target` is not a `DifferentiableTargetMeasure`.
         """
+        if model.approximation is not None and logger is not None:
+            logger.info(
+                "model.approximation is given but ignored by MALAAlgorithm; using "
+                "model.reference. Use PCNAlgorithm/PMALAAlgorithm to make use of both."
+            )
+        if not isinstance(model.target, DifferentiableTargetMeasure):
+            raise ValueError(
+                "MALAAlgorithm requires model.target to be a DifferentiableTargetMeasure."
+            )
         super().__init__(step_width)
-        self._target_model = target_model
-        self._proposal_measure = proposal_measure
+        self._target_model = model.target
+        self._proposal_measure = model.reference
         self._current_cache: _MALAStateCache | None = None
         self._pending_proposal_cache: _MALAStateCache | None = None
 
@@ -115,7 +127,7 @@ class MALAAlgorithm(MCMCAlgorithm):
         rng: np.random.Generator,
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         if self._current_cache is None:
-            self._current_cache = self._evaluate_state_cache(state)
+            self._current_cache = self._evaluate_state_and_cache(state)
         random_increment = rng.normal(size=self._proposal_measure.random_vector_size)
         random_increment = self._proposal_measure.apply_covariance_factorization(random_increment)
         mean = self._proposal_measure.mean
@@ -134,8 +146,8 @@ class MALAAlgorithm(MCMCAlgorithm):
         proposal: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> float:
         if self._current_cache is None:
-            self._current_cache = self._evaluate_state_cache(current_state)
-        proposal_cache = self._evaluate_state_cache(proposal)
+            self._current_cache = self._evaluate_state_and_cache(current_state)
+        proposal_cache = self._evaluate_state_and_cache(proposal)
         self._pending_proposal_cache = proposal_cache
         mean = self._proposal_measure.mean
         log_transition_current_to_proposal = self._evaluate_log_transition_density(
@@ -155,13 +167,13 @@ class MALAAlgorithm(MCMCAlgorithm):
         self._pending_proposal_cache = None
 
     # ----------------------------------------------------------------------------------------------
-    def _evaluate_state_cache(
+    def _evaluate_state_and_cache(
         self, state: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> _MALAStateCache:
         r"""Evaluate $\Phi(u)$, $\nabla\Phi(u)$, and $C\nabla\Phi(u)$ at `state`."""
         gradient = self._target_model.evaluate_gradient(state)
         return _MALAStateCache(
-            potential=self._target_model.evaluate_cost(state),
+            potential=self._target_model.evaluate_potential(state),
             gradient=gradient,
             covariance_gradient_action=self._proposal_measure.apply_covariance_operator(gradient),
         )
