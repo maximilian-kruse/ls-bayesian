@@ -1,4 +1,5 @@
-r"""Preconditioned MALA sampler with a fixed, non-prior Gaussian preconditioner.
+r"""Preconditioned MALA sampler with a fixed Gaussian preconditioner distinct from the reference
+measure.
 
 Classes:
     PMALAAlgorithm: MALA sampler preconditioned by a fixed Gaussian
@@ -13,7 +14,8 @@ import numpy as np
 from beartype.vale import Is
 
 from ls_bayesian.mcmc.algorithm import MCMCAlgorithm
-from ls_bayesian.mcmc.measures import ProposalMeasure, ReferenceMeasure, TargetMeasure
+from ls_bayesian.mcmc.measures import DifferentiableTargetMeasure
+from ls_bayesian.mcmc.model import MCMCModel
 
 
 # ==================================================================================================
@@ -46,12 +48,7 @@ class PMALAAlgorithm(MCMCAlgorithm):
     Fixing $K(u) \equiv \overline K$ (e.g. a Laplace approximation computed once at the MAP,
     rather than re-linearized at every state) makes the Carleman-Fredholm determinant that
     otherwise appears in the acceptance probability (their Theorem 3.5) state-independent, so it
-    cancels exactly in the Metropolis-Hastings ratio. `target_model`'s potential and gradient stay
-    relative to the true $\mu_0$ throughout -- unlike
-    [`MALAAlgorithm`][ls_bayesian.mcmc.algorithms.mala.MALAAlgorithm] with a non-prior
-    `proposal_measure`, this does not require `target_model` to be re-expressed relative to
-    $\overline K$, since $\overline K$ never plays the role of a measure proposed from and
-    corrected for, only that of a preconditioner.
+    cancels exactly in the Metropolis-Hastings ratio.
 
     Proposal (given current state $u$, score $s(u) = \nabla\Phi(u) + C^{-1}u$):
 
@@ -61,9 +58,7 @@ class PMALAAlgorithm(MCMCAlgorithm):
     $$
 
     $\overline K$'s own mean plays no role: it cancels identically out of the drift for any
-    choice, which is why `preconditioner` uses [`ProposalMeasure`]
-    [ls_bayesian.mcmc.measures.ProposalMeasure] purely for its covariance/precision actions
-    (`mean` and `evaluate_cost` are never read here).
+    choice, which is why the preconditioner's `mean` is never read here.
 
     With $\rho = \frac{2-\delta}{2+\delta}$, $g(u) = u - \overline K s(u)$, and innovation
     $w(u,v) = (v - \rho u) / \sqrt{1-\rho^2}$, the acceptance probability is $\alpha(u,v) = 1
@@ -76,19 +71,13 @@ class PMALAAlgorithm(MCMCAlgorithm):
     $$
 
     Inner products above are the ordinary Euclidean dot product of coefficient vectors (as in
-    [`MALAAlgorithm`][ls_bayesian.mcmc.algorithms.mala.MALAAlgorithm]): `target_model`'s gradient,
-    `reference_measure`, and `preconditioner` must all be expressed on the same coefficient space.
+    [`MALAAlgorithm`][ls_bayesian.mcmc.algorithms.mala.MALAAlgorithm]): `model.target`'s gradient,
+    `model.reference`, and `model.approximation` must all be expressed on the same coefficient
+    space.
 
-    When `preconditioner` wraps $C$ itself (`apply_covariance_operator`/
-    `apply_covariance_factorization`/`apply_precision_operator` all acting as $\mu_0$'s own
-    covariance/precision), $\varrho$ reduces exactly to `MALAAlgorithm`'s $\varrho$ and the two
-    algorithms coincide (Beskos et al.'s Remark 3.8, "$\infty$-MALA and $\infty$-mMALA coincide
-    when $K(u) \equiv C$"); this reduction was checked analytically when deriving the formula
-    above, and is exercised directly by this class's tests. For the fully location-specific
-    $K(u)$, or for a Riemannian-manifold/Gauss-Newton preconditioner, see $\infty$-mMALA in the
-    reference below -- out of scope here, since its acceptance probability needs the
-    (state-dependent, generally intractable) Carleman-Fredholm determinant that this class's fixed
-    $\overline K$ lets it avoid.
+    With `model.approximation` equal to `model.reference` (i.e. $\overline K = C$), $\varrho$
+    reduces exactly to `MALAAlgorithm`'s $\varrho$ and the two algorithms coincide (Beskos et al.'s
+    Remark 3.8, "$\infty$-MALA and $\infty$-mMALA coincide when $K(u) \equiv C$").
 
     Methods:
         compute_step: Compute one step of MCMC.
@@ -101,32 +90,41 @@ class PMALAAlgorithm(MCMCAlgorithm):
     # ----------------------------------------------------------------------------------------------
     def __init__(
         self,
-        target_model: TargetMeasure,
-        reference_measure: ReferenceMeasure,
-        preconditioner: ProposalMeasure,
+        model: MCMCModel,
         step_width: Annotated[Real, Is[lambda x: x > 0]],
     ) -> None:
         r"""Initialize the preconditioned MALA algorithm.
 
         Args:
-            target_model (TargetMeasure): Potential $\Phi$ of the actual target and its gradient,
-                relative to the true, centered reference measure $\mu_0$.
-            reference_measure (ReferenceMeasure): The target's actual, centered reference measure
-                $\mu_0 = \mathcal N(0, C)$, expressed on the same coefficient space as
-                `target_model`'s gradient.
-            preconditioner (ProposalMeasure): The fixed Gaussian $\overline K$ used to precondition
-                the proposal, expressed on the same coefficient space. Only its covariance and
-                precision actions are used; `mean` and `evaluate_cost` are ignored. Use a
-                preconditioner wrapping $C$ itself to recover plain MALA (prefer
-                [`MALAAlgorithm`][ls_bayesian.mcmc.algorithms.mala.MALAAlgorithm] directly in that
-                case, which needs neither `reference_measure` nor a precision operator).
+            model (MCMCModel): Target (must be a `DifferentiableTargetMeasure`), the reference
+                measure $\mu_0 = \mathcal N(0, C)$, expressed on the same coefficient space as
+                `model.target`'s gradient, and the fixed Gaussian $\overline K$ used to
+                precondition the proposal, expressed on the same coefficient space; only
+                $\overline K$'s covariance and precision actions are used, `mean` is ignored.
+                `model.approximation` is required; pass `model.reference` as `model.approximation`
+                too, or prefer [`MALAAlgorithm`][ls_bayesian.mcmc.algorithms.mala.MALAAlgorithm]
+                directly, to recover plain MALA.
             step_width (Real): Step size $\delta > 0$. Smaller values increase acceptance; larger
                 values explore faster until stability or acceptance deteriorates.
+
+        Raises:
+            ValueError: If `model.approximation` is `None`, or `model.target` is not a
+                `DifferentiableTargetMeasure`.
         """
+        if model.approximation is None:
+            raise ValueError(
+                "PMALAAlgorithm requires model.approximation to be given; pass model.reference "
+                "as model.approximation too to precondition with the reference measure itself, "
+                "or use MALAAlgorithm directly."
+            )
+        if not isinstance(model.target, DifferentiableTargetMeasure):
+            raise ValueError(
+                "PMALAAlgorithm requires model.target to be a DifferentiableTargetMeasure."
+            )
         super().__init__(step_width)
-        self._target_model = target_model
-        self._reference_measure = reference_measure
-        self._preconditioner = preconditioner
+        self._target_model = model.target
+        self._reference_measure = model.reference
+        self._preconditioner = model.approximation
         self._current_cache: _PMALAStateCache | None = None
         self._pending_proposal_cache: _PMALAStateCache | None = None
 
@@ -138,7 +136,7 @@ class PMALAAlgorithm(MCMCAlgorithm):
         rng: np.random.Generator,
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         if self._current_cache is None:
-            self._current_cache = self._evaluate_state_cache(state)
+            self._current_cache = self._evaluate_state_and_cache(state)
         random_increment = rng.normal(size=self._preconditioner.random_vector_size)
         random_increment = self._preconditioner.apply_covariance_factorization(random_increment)
         proposal = (
@@ -158,8 +156,8 @@ class PMALAAlgorithm(MCMCAlgorithm):
         proposal: np.ndarray[tuple[int], np.dtype[np.float64]],
     ) -> float:
         if self._current_cache is None:
-            self._current_cache = self._evaluate_state_cache(current_state)
-        proposal_cache = self._evaluate_state_cache(proposal)
+            self._current_cache = self._evaluate_state_and_cache(current_state)
+        proposal_cache = self._evaluate_state_and_cache(proposal)
         self._pending_proposal_cache = proposal_cache
         log_transition_current_to_proposal = self._evaluate_log_transition_potential(
             current_state, proposal, self._current_cache
@@ -178,7 +176,7 @@ class PMALAAlgorithm(MCMCAlgorithm):
         self._pending_proposal_cache = None
 
     # ----------------------------------------------------------------------------------------------
-    def _evaluate_state_cache(
+    def _evaluate_state_and_cache(
         self, state: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> _PMALAStateCache:
         r"""Evaluate $\Phi(u)$, $s(u) = \nabla\Phi(u) + C^{-1}u$, and $\overline K s(u)$ at
@@ -187,7 +185,7 @@ class PMALAAlgorithm(MCMCAlgorithm):
         precision_weighted_state = self._reference_measure.apply_precision_operator(state)
         score = gradient + precision_weighted_state
         return _PMALAStateCache(
-            potential=self._target_model.evaluate_cost(state),
+            potential=self._target_model.evaluate_potential(state),
             score=score,
             preconditioned_score=self._preconditioner.apply_covariance_operator(score),
         )
