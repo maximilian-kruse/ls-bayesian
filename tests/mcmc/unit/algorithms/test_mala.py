@@ -1,8 +1,12 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 from beartype.roar import BeartypeCallHintViolation
 
+from ls_bayesian.common.logging import BaseLogger, LoggerSettings
 from ls_bayesian.mcmc.algorithms.mala import MALAAlgorithm
+from ls_bayesian.mcmc.model import MCMCModel
 from tests.mcmc import helpers
 
 pytestmark = pytest.mark.unit
@@ -28,7 +32,8 @@ def test_acceptance_probability_matches_exact_gaussian_transition_density_ratio(
     minimizer = rng.standard_normal(dim)
     target = helpers.QuadraticTargetMeasure(hessian, minimizer)
     step_width = 0.37
-    algorithm_under_test = MALAAlgorithm(target, proposal_measure, step_width)
+    model = MCMCModel(target=target, reference=proposal_measure)
+    algorithm_under_test = MALAAlgorithm(model, step_width)
 
     u = rng.standard_normal(dim)
     v = rng.standard_normal(dim)
@@ -60,7 +65,7 @@ def test_acceptance_probability_matches_exact_gaussian_transition_density_ratio(
     # calls, assuming that argument never changes; a fresh instance per direction keeps the two
     # evaluations independent, exactly as they would be on two separate chains.
     acceptance_u_to_v = algorithm_under_test._evaluate_acceptance_probability(u, v)
-    algorithm_under_test_reverse = MALAAlgorithm(target, proposal_measure, step_width)
+    algorithm_under_test_reverse = MALAAlgorithm(model, step_width)
     acceptance_v_to_u = algorithm_under_test_reverse._evaluate_acceptance_probability(v, u)
 
     np.testing.assert_allclose(
@@ -73,7 +78,7 @@ def test_acceptance_probability_matches_exact_gaussian_transition_density_ratio(
 # --------------------------------------------------------------------------------------------------
 def test_acceptance_is_one_when_proposal_equals_current_state() -> None:
     setup = helpers.create_quadratic_gaussian_setup(seed=0)
-    algorithm_under_test = MALAAlgorithm(setup.target, setup.reference, step_width=0.2)
+    algorithm_under_test = MALAAlgorithm(setup.to_model(), step_width=0.2)
     state = np.random.default_rng(1).standard_normal(helpers.STATE_DIM)
 
     acceptance_probability = algorithm_under_test._evaluate_acceptance_probability(state, state)
@@ -84,7 +89,7 @@ def test_acceptance_is_one_when_proposal_equals_current_state() -> None:
 # ==================================================================================================
 def test_proposal_with_zero_gradient_is_pure_prior_reverting_step() -> None:
     """With `Phi` identically zero, the drift term vanishes and the proposal reduces to the
-    classical pCN-type AR(1) step around `proposal_measure.mean`."""
+    classical pCN-type step around `proposal_measure.mean`."""
     dim = helpers.STATE_DIM
     rng_setup = np.random.default_rng(5)
     covariance = helpers.random_spd_matrix(rng_setup, dim)
@@ -92,7 +97,9 @@ def test_proposal_with_zero_gradient_is_pure_prior_reverting_step() -> None:
     proposal_measure = helpers.DenseGaussianMeasure(mean_vector, covariance, seed=7)
     target = helpers.ZeroTargetMeasure()
     step_width = 0.4
-    algorithm_under_test = MALAAlgorithm(target, proposal_measure, step_width)
+    algorithm_under_test = MALAAlgorithm(
+        MCMCModel(target=target, reference=proposal_measure), step_width
+    )
     state = rng_setup.standard_normal(dim)
 
     proposal = algorithm_under_test._create_proposal(state, np.random.default_rng(9))
@@ -117,7 +124,8 @@ def test_gradient_evaluated_once_per_step_regardless_of_accept_reject_history() 
     that count (2N) would mean the cache introduced in `algorithm.py` is not actually being hit."""
     setup = helpers.create_quadratic_gaussian_setup(seed=4)
     counting_target = helpers.CallCountingTargetMeasure(setup.target)
-    algorithm_under_test = MALAAlgorithm(counting_target, setup.reference, step_width=0.2)
+    model = MCMCModel(target=counting_target, reference=setup.reference)
+    algorithm_under_test = MALAAlgorithm(model, step_width=0.2)
     rng = np.random.default_rng(3)
     state = rng.standard_normal(helpers.STATE_DIM)
 
@@ -130,7 +138,7 @@ def test_gradient_evaluated_once_per_step_regardless_of_accept_reject_history() 
         state = proposal if accepted else state
 
     assert counting_target.num_evaluate_gradient_calls == num_steps + 1
-    assert counting_target.num_evaluate_cost_calls == num_steps + 1
+    assert counting_target.num_evaluate_potential_calls == num_steps + 1
 
 
 # ==================================================================================================
@@ -139,15 +147,68 @@ def test_step_width_must_be_positive(step_width: float) -> None:
     setup = helpers.create_quadratic_gaussian_setup(seed=0)
 
     with pytest.raises(BeartypeCallHintViolation):
-        MALAAlgorithm(setup.target, setup.reference, step_width=step_width)
+        MALAAlgorithm(setup.to_model(), step_width=step_width)
 
 
 # --------------------------------------------------------------------------------------------------
 def test_proposal_shape_matches_state() -> None:
     setup = helpers.create_quadratic_gaussian_setup(seed=0)
-    algorithm_under_test = MALAAlgorithm(setup.target, setup.reference, step_width=0.2)
+    algorithm_under_test = MALAAlgorithm(setup.to_model(), step_width=0.2)
     state = np.random.default_rng(2).standard_normal(helpers.STATE_DIM)
 
     proposal = algorithm_under_test._create_proposal(state, np.random.default_rng(3))
 
     assert proposal.shape == state.shape
+
+
+# ==================================================================================================
+def test_ignores_approximation_when_both_given() -> None:
+    """`MALAAlgorithm` has no way to correct for a mismatch between `reference` and
+    `approximation` (see `PCNAlgorithm`/`PMALAAlgorithm` for the two generalizations that do), so
+    it must silently ignore `approximation` when both are given, using `reference` alone -- not
+    raise, and not silently switch to `approximation` instead."""
+    setup = helpers.create_quadratic_gaussian_setup(seed=0)
+    different_approximation = helpers.DenseGaussianMeasure(
+        np.zeros(helpers.STATE_DIM),
+        helpers.random_spd_matrix(np.random.default_rng(1), helpers.STATE_DIM),
+        seed=2,
+    )
+    reference_only_algorithm = MALAAlgorithm(setup.to_model(), step_width=0.2)
+    both_given_algorithm = MALAAlgorithm(
+        MCMCModel(
+            target=setup.target, reference=setup.reference, approximation=different_approximation
+        ),
+        step_width=0.2,
+    )
+    state = np.random.default_rng(3).standard_normal(helpers.STATE_DIM)
+
+    reference_only_proposal = reference_only_algorithm._create_proposal(
+        state, np.random.default_rng(4)
+    )
+    both_given_proposal = both_given_algorithm._create_proposal(state, np.random.default_rng(4))
+
+    np.testing.assert_allclose(both_given_proposal, reference_only_proposal, rtol=1e-12)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_logs_info_when_approximation_given_and_ignored(tmp_path: Path) -> None:
+    setup = helpers.create_quadratic_gaussian_setup(seed=0)
+    logfile_path = tmp_path / "mala.log"
+    logger_settings = LoggerSettings(print_to_console=False, logfile_path=logfile_path)
+    model = MCMCModel(target=setup.target, reference=setup.reference, approximation=setup.reference)
+
+    with BaseLogger(logger_settings, prefix="mala") as logger:
+        MALAAlgorithm(model, step_width=0.2, logger=logger)
+
+    assert "ignored" in logfile_path.read_text()
+
+
+# --------------------------------------------------------------------------------------------------
+def test_rejects_non_differentiable_target() -> None:
+    reference = helpers.DenseGaussianMeasure(
+        np.zeros(helpers.STATE_DIM), np.eye(helpers.STATE_DIM), seed=0
+    )
+    model = MCMCModel(target=helpers.PotentialOnlyTargetMeasure(), reference=reference)
+
+    with pytest.raises(ValueError, match="DifferentiableTargetMeasure"):
+        MALAAlgorithm(model, step_width=0.2)

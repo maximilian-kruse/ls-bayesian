@@ -4,6 +4,7 @@ from beartype.roar import BeartypeCallHintViolation
 
 from ls_bayesian.mcmc.algorithms.mala import MALAAlgorithm
 from ls_bayesian.mcmc.algorithms.pmala import PMALAAlgorithm
+from ls_bayesian.mcmc.model import MCMCModel
 from tests.mcmc import helpers
 
 pytestmark = pytest.mark.unit
@@ -29,7 +30,8 @@ def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_prec
     minimizer = rng.standard_normal(dim)
     target = helpers.QuadraticTargetMeasure(hessian, minimizer)
     step_width = 0.29
-    algorithm_under_test = PMALAAlgorithm(target, reference, preconditioner, step_width)
+    model = MCMCModel(target=target, reference=reference, approximation=preconditioner)
+    algorithm_under_test = PMALAAlgorithm(model, step_width)
 
     u = rng.standard_normal(dim)
     v = rng.standard_normal(dim)
@@ -56,7 +58,7 @@ def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_prec
     expected_exponent = (log_pi(v) + log_q(u, v)) - (log_pi(u) + log_q(v, u))
 
     acceptance_u_to_v = algorithm_under_test._evaluate_acceptance_probability(u, v)
-    algorithm_under_test_reverse = PMALAAlgorithm(target, reference, preconditioner, step_width)
+    algorithm_under_test_reverse = PMALAAlgorithm(model, step_width)
     acceptance_v_to_u = algorithm_under_test_reverse._evaluate_acceptance_probability(v, u)
 
     np.testing.assert_allclose(
@@ -68,14 +70,14 @@ def test_acceptance_probability_matches_exact_density_ratio_with_mismatched_prec
 
 # ==================================================================================================
 def test_collapses_to_mala_algorithm_when_preconditioner_and_reference_equal_prior() -> None:
-    """With `preconditioner` and `reference_measure` both wrapping the target's actual prior --
-    the same measure `MALAAlgorithm` would take as `proposal_measure` -- PMALA must reduce to
-    plain MALA exactly (Beskos et al.'s Remark 3.8, `K(u) = C`)."""
+    """With `approximation` equal to `reference` (the fixed preconditioner $\\overline K = C$ --
+    the same measure `MALAAlgorithm` would take as `reference`), PMALA must reduce to plain MALA
+    exactly (Beskos et al.'s Remark 3.8, `K(u) = C`)."""
     setup = helpers.create_quadratic_gaussian_setup(seed=30)
     step_width = 0.33
 
-    mala_algorithm = MALAAlgorithm(setup.target, setup.reference, step_width)
-    pmala_algorithm = PMALAAlgorithm(setup.target, setup.reference, setup.reference, step_width)
+    mala_algorithm = MALAAlgorithm(setup.to_model(), step_width)
+    pmala_algorithm = PMALAAlgorithm(setup.to_model(setup.reference), step_width)
 
     state = np.random.default_rng(31).standard_normal(helpers.STATE_DIM)
     mala_proposal = mala_algorithm._create_proposal(state, np.random.default_rng(32))
@@ -91,10 +93,10 @@ def test_collapses_to_mala_algorithm_when_preconditioner_and_reference_equal_pri
 
 
 # ==================================================================================================
-def test_preconditioner_mean_and_evaluate_cost_are_ignored() -> None:
-    """Two preconditioners that differ only in `mean`/`evaluate_cost` (never in covariance or
-    precision) must give identical proposals and acceptance probabilities -- both are documented
-    as unread in the preconditioner role."""
+def test_preconditioner_mean_is_ignored() -> None:
+    """Two preconditioners that differ only in `mean` (never in covariance or precision) must give
+    identical proposals and acceptance probabilities -- `mean` is documented as unread in the
+    preconditioner role."""
     setup = helpers.create_quadratic_gaussian_setup(seed=40)
     covariance = helpers.random_spd_matrix(np.random.default_rng(41), helpers.STATE_DIM)
     preconditioner_a = helpers.DenseGaussianMeasure(
@@ -104,11 +106,10 @@ def test_preconditioner_mean_and_evaluate_cost_are_ignored() -> None:
         mean_vector=np.random.default_rng(43).standard_normal(helpers.STATE_DIM) * 1000.0,
         covariance_matrix=covariance,
         seed=42,
-        correction_matrix=helpers.random_spd_matrix(np.random.default_rng(44), helpers.STATE_DIM),
     )
     step_width = 0.25
-    algorithm_a = PMALAAlgorithm(setup.target, setup.reference, preconditioner_a, step_width)
-    algorithm_b = PMALAAlgorithm(setup.target, setup.reference, preconditioner_b, step_width)
+    algorithm_a = PMALAAlgorithm(setup.to_model(preconditioner_a), step_width)
+    algorithm_b = PMALAAlgorithm(setup.to_model(preconditioner_b), step_width)
 
     state = np.random.default_rng(45).standard_normal(helpers.STATE_DIM)
     proposal_a = algorithm_a._create_proposal(state, np.random.default_rng(46))
@@ -129,9 +130,10 @@ def test_gradient_evaluated_once_per_step_regardless_of_accept_reject_history() 
     gradient/cost exactly N+1 times, never re-evaluating a state already in cache."""
     setup = helpers.create_quadratic_gaussian_setup(seed=50)
     counting_target = helpers.CallCountingTargetMeasure(setup.target)
-    algorithm_under_test = PMALAAlgorithm(
-        counting_target, setup.reference, setup.reference, step_width=0.2
+    model = MCMCModel(
+        target=counting_target, reference=setup.reference, approximation=setup.reference
     )
+    algorithm_under_test = PMALAAlgorithm(model, step_width=0.2)
     rng = np.random.default_rng(51)
     state = rng.standard_normal(helpers.STATE_DIM)
 
@@ -144,7 +146,7 @@ def test_gradient_evaluated_once_per_step_regardless_of_accept_reject_history() 
         state = proposal if accepted else state
 
     assert counting_target.num_evaluate_gradient_calls == num_steps + 1
-    assert counting_target.num_evaluate_cost_calls == num_steps + 1
+    assert counting_target.num_evaluate_potential_calls == num_steps + 1
 
 
 # ==================================================================================================
@@ -153,4 +155,29 @@ def test_step_width_must_be_positive(step_width: float) -> None:
     setup = helpers.create_quadratic_gaussian_setup(seed=0)
 
     with pytest.raises(BeartypeCallHintViolation):
-        PMALAAlgorithm(setup.target, setup.reference, setup.reference, step_width=step_width)
+        PMALAAlgorithm(setup.to_model(), step_width=step_width)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_rejects_non_differentiable_target() -> None:
+    reference = helpers.DenseGaussianMeasure(
+        np.zeros(helpers.STATE_DIM), np.eye(helpers.STATE_DIM), seed=0
+    )
+    model = MCMCModel(
+        target=helpers.PotentialOnlyTargetMeasure(), reference=reference, approximation=reference
+    )
+
+    with pytest.raises(ValueError, match="DifferentiableTargetMeasure"):
+        PMALAAlgorithm(model, step_width=0.2)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_rejects_model_without_approximation() -> None:
+    """`PMALAAlgorithm` requires `model.approximation`; leaving it out must raise rather than
+    silently falling back to a single Gaussian (unlike `MALAAlgorithm`, which is the class for
+    that single-Gaussian case)."""
+    setup = helpers.create_quadratic_gaussian_setup(seed=0)
+    model = MCMCModel(target=setup.target, reference=setup.reference)
+
+    with pytest.raises(ValueError, match="requires model.approximation"):
+        PMALAAlgorithm(model, step_width=0.2)
