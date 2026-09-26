@@ -58,7 +58,9 @@ def test_compute_step_returns_proposal_object_on_accept() -> None:
 
 # --------------------------------------------------------------------------------------------------
 def test_compute_step_returns_current_state_object_on_reject() -> None:
-    algorithm_under_test = helpers.FakeMCMCAlgorithm(acceptance_probability=0.0)
+    algorithm_under_test = helpers.FakeMCMCAlgorithm(
+        acceptance_probability=0.0, proposal_increment=1
+    )
     rng = np.random.default_rng(0)
     current_state = np.zeros(2)
 
