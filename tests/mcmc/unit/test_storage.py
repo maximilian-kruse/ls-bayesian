@@ -10,11 +10,10 @@ pytestmark = pytest.mark.unit
 
 
 # ==================================================================================================
-def test_numpy_storage_values_raises_before_any_store() -> None:
+def test_numpy_storage_values_is_none_before_any_store() -> None:
     storage_under_test = NumpyStorage()
 
-    with pytest.raises(ValueError, match="No samples"):
-        _ = storage_under_test.values
+    assert storage_under_test.values is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -38,11 +37,10 @@ def test_numpy_storage_flush_is_noop() -> None:
 
 
 # ==================================================================================================
-def test_zarr_storage_values_raises_before_any_store(tmp_path: Path) -> None:
+def test_zarr_storage_values_is_none_before_any_store(tmp_path: Path) -> None:
     storage_under_test = ZarrStorage(tmp_path, chunk_size=4)
 
-    with pytest.raises(ValueError, match="No samples"):
-        _ = storage_under_test.values
+    assert storage_under_test.values is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -88,7 +86,7 @@ def test_zarr_storage_chunk_size_sets_on_disk_chunking(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-def test_zarr_storage_overwrite_false_appends_to_existing_store(tmp_path: Path) -> None:
+def test_zarr_storage_appends_to_existing_store(tmp_path: Path) -> None:
     first_storage = ZarrStorage(tmp_path, chunk_size=4, buffer_size=1)
     first_storage.store(np.array([1.0]))
     first_storage.store(np.array([2.0]))
@@ -97,6 +95,37 @@ def test_zarr_storage_overwrite_false_appends_to_existing_store(tmp_path: Path) 
     second_storage.store(np.array([3.0]))
 
     np.testing.assert_allclose(second_storage.values, [[1.0], [2.0], [3.0]])
+
+
+# --------------------------------------------------------------------------------------------------
+def test_zarr_storage_values_returns_existing_samples_before_any_store(tmp_path: Path) -> None:
+    first_storage = ZarrStorage(tmp_path, chunk_size=4, buffer_size=1)
+    first_storage.store(np.array([1.0]))
+    first_storage.store(np.array([2.0]))
+
+    second_storage = ZarrStorage(tmp_path, chunk_size=4, overwrite=False)
+
+    np.testing.assert_allclose(second_storage.values, [[1.0], [2.0]])
+
+
+# --------------------------------------------------------------------------------------------------
+def test_zarr_storage_rejects_chunk_size_mismatching_existing_store(tmp_path: Path) -> None:
+    first_storage = ZarrStorage(tmp_path, chunk_size=4, buffer_size=1)
+    first_storage.store(np.array([1.0]))
+
+    with pytest.raises(ValueError, match="chunk_size 5"):
+        ZarrStorage(tmp_path, chunk_size=5, overwrite=False)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_zarr_storage_overwrite_true_ignores_existing_chunk_size(tmp_path: Path) -> None:
+    first_storage = ZarrStorage(tmp_path, chunk_size=4, buffer_size=1)
+    first_storage.store(np.array([1.0]))
+
+    second_storage = ZarrStorage(tmp_path, chunk_size=5, buffer_size=1, overwrite=True)
+    second_storage.store(np.array([2.0]))
+
+    assert second_storage.values.chunks[0] == 5
 
 
 # --------------------------------------------------------------------------------------------------

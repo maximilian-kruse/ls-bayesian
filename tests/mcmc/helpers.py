@@ -10,8 +10,10 @@ from typing import override
 import numpy as np
 
 from ls_bayesian.mcmc.algorithm import MCMCAlgorithm
-from ls_bayesian.mcmc.measures import ProposalMeasure, ReferenceMeasure, TargetMeasure
+from ls_bayesian.mcmc.measures import DifferentiableTargetMeasure, GaussianMeasure, TargetMeasure
+from ls_bayesian.mcmc.model import MCMCModel
 from ls_bayesian.mcmc.storage import MCMCStorage
+from tests import notebook_helpers
 
 STATE_DIM = 5
 
@@ -39,29 +41,20 @@ def gaussian_posterior_moments(
 
 
 # ==================================================================================================
-class DenseGaussianMeasure(ProposalMeasure, ReferenceMeasure):
-    r"""Dense Gaussian measure $\mathcal N(\bar u, C)$ implementing both `ProposalMeasure` and
-    `ReferenceMeasure`, so the same object can play the classical-prior, generalized-pCN-proposal,
-    PMALA-preconditioner, or PMALA-reference role in tests.
-
-    `correction_matrix` controls `evaluate_cost`: `None` (default) gives the identically-zero
-    correction that recovers classical pCN / plain MALA; a second SPD matrix gives a genuine
-    nonzero quadratic correction potential $\Phi_\nu^\text{approx}(u) = \frac{1}{2}(u-\bar u)^T
-    P (u-\bar u)$, for exercising the generalized pCN case.
-    """
+class DenseGaussianMeasure(GaussianMeasure):
+    r"""Dense Gaussian measure $\mathcal N(\bar u, C)$, so the same object can play the
+    classical-prior, generalized-pCN-proposal, or PMALA-preconditioner/reference role in tests."""
 
     def __init__(
         self,
         mean_vector: np.ndarray,
         covariance_matrix: np.ndarray,
         seed: int,
-        correction_matrix: np.ndarray | None = None,
     ) -> None:
         self.mean_vector = mean_vector
         self.covariance_matrix = covariance_matrix
         self.precision_matrix = np.linalg.inv(covariance_matrix)
         self.covariance_factor = np.linalg.cholesky(covariance_matrix)
-        self.correction_matrix = correction_matrix
         self._rng = np.random.default_rng(seed)
 
     @property
@@ -73,13 +66,6 @@ class DenseGaussianMeasure(ProposalMeasure, ReferenceMeasure):
     @override
     def random_vector_size(self) -> int:
         return self.covariance_factor.shape[1]
-
-    @override
-    def evaluate_cost(self, state: np.ndarray) -> float:
-        if self.correction_matrix is None:
-            return 0.0
-        difference = state - self.mean_vector
-        return float(0.5 * difference @ self.correction_matrix @ difference)
 
     @override
     def apply_covariance_factorization(self, random_vector: np.ndarray) -> np.ndarray:
@@ -100,7 +86,7 @@ class DenseGaussianMeasure(ProposalMeasure, ReferenceMeasure):
 
 
 # ==================================================================================================
-class QuadraticTargetMeasure(TargetMeasure):
+class QuadraticTargetMeasure(DifferentiableTargetMeasure):
     r"""Quadratic potential $\Phi(u) = \frac{1}{2}(u-a)^T H (u-a)$, exact gradient $H(u-a)$.
 
     A quadratic $\Phi$ combined with a Gaussian reference measure makes the resulting target $\mu$
@@ -113,7 +99,7 @@ class QuadraticTargetMeasure(TargetMeasure):
         self.minimizer = minimizer
 
     @override
-    def evaluate_cost(self, state: np.ndarray) -> float:
+    def evaluate_potential(self, state: np.ndarray) -> float:
         difference = state - self.minimizer
         return float(0.5 * difference @ self.matrix @ difference)
 
@@ -126,15 +112,19 @@ class QuadraticTargetMeasure(TargetMeasure):
 @dataclass
 class QuadraticGaussianSetup:
     """A quadratic target combined with a centered dense Gaussian reference, shared across
-    multiple test files. `reference` plays both the `ReferenceMeasure` role (PMALA) and the
-    classical `ProposalMeasure` role (plain MALA/pCN with $\\nu=\\mu_0$), since it is centered
-    with `correction_matrix=None`."""
+    multiple test files. `reference` is a fully-capable `GaussianMeasure`, so `to_model()` (with
+    `approximation` left `None`) suffices for the classical/plain fallback of every algorithm."""
 
     target: QuadraticTargetMeasure
     reference: DenseGaussianMeasure
     hessian: np.ndarray
     minimizer: np.ndarray
     covariance: np.ndarray
+
+    def to_model(self, approximation: GaussianMeasure | None = None) -> MCMCModel:
+        """Build an `MCMCModel` from this setup's `target`/`reference`, optionally overriding
+        `approximation`."""
+        return MCMCModel(target=self.target, reference=self.reference, approximation=approximation)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -157,12 +147,22 @@ def create_quadratic_gaussian_setup(seed: int) -> QuadraticGaussianSetup:
 
 
 # ==================================================================================================
-class ZeroTargetMeasure(TargetMeasure):
+class PotentialOnlyTargetMeasure(TargetMeasure):
+    """A `TargetMeasure` that is not a `DifferentiableTargetMeasure` -- for asserting that
+    algorithms requiring a gradient reject it at construction."""
+
+    @override
+    def evaluate_potential(self, state: np.ndarray) -> float:
+        return 0.0
+
+
+# ==================================================================================================
+class ZeroTargetMeasure(DifferentiableTargetMeasure):
     """Potential and gradient identically zero -- isolates the pure prior-reverting proposal from
     any drift contribution."""
 
     @override
-    def evaluate_cost(self, state: np.ndarray) -> float:
+    def evaluate_potential(self, state: np.ndarray) -> float:
         return 0.0
 
     @override
@@ -171,19 +171,20 @@ class ZeroTargetMeasure(TargetMeasure):
 
 
 # ==================================================================================================
-class CallCountingTargetMeasure(TargetMeasure):
-    """Wraps another `TargetMeasure`, counting calls to `evaluate_cost`/`evaluate_gradient` -- for
-    asserting that MALA-family algorithms do not re-evaluate an already-cached state."""
+class CallCountingTargetMeasure(DifferentiableTargetMeasure):
+    """Wraps another `DifferentiableTargetMeasure`, counting calls to
+    `evaluate_potential`/`evaluate_gradient` -- for asserting that MALA-family algorithms do not
+    re-evaluate an already-cached state."""
 
-    def __init__(self, wrapped: TargetMeasure) -> None:
+    def __init__(self, wrapped: DifferentiableTargetMeasure) -> None:
         self._wrapped = wrapped
-        self.num_evaluate_cost_calls = 0
+        self.num_evaluate_potential_calls = 0
         self.num_evaluate_gradient_calls = 0
 
     @override
-    def evaluate_cost(self, state: np.ndarray) -> float:
-        self.num_evaluate_cost_calls += 1
-        return self._wrapped.evaluate_cost(state)
+    def evaluate_potential(self, state: np.ndarray) -> float:
+        self.num_evaluate_potential_calls += 1
+        return self._wrapped.evaluate_potential(state)
 
     @override
     def evaluate_gradient(self, state: np.ndarray) -> np.ndarray:
@@ -270,3 +271,11 @@ class RecordingStorage(MCMCStorage):
     def flush(self) -> None:
         self.flush_call_count += 1
         self._wrapped.flush()
+
+
+# ==================================================================================================
+MCMC_TUTORIALS_DIR = notebook_helpers.REPO_ROOT / "tutorials" / "mcmc"
+PCN_NOTEBOOK = MCMC_TUTORIALS_DIR / "pcn.ipynb"
+MALA_NOTEBOOK = MCMC_TUTORIALS_DIR / "mala.ipynb"
+PMALA_NOTEBOOK = MCMC_TUTORIALS_DIR / "pmala.ipynb"
+NOTEBOOK_EXECUTION_TIMEOUT_SECONDS = 120
