@@ -67,9 +67,7 @@ def _build_prior(mesh: dlx.mesh.Mesh, fe_data: tuple[str, int]) -> spde_prior.SP
         seed=0,
         fe_data=fe_data,
     )
-    return builder.SPDEPriorBuilder(
-        settings, strategies.BilaplacianComponentStrategy()
-    ).build()
+    return builder.SPDEPriorBuilder(settings, strategies.BilaplacianComponentStrategy()).build()
 
 
 def _apply_prior_operation(

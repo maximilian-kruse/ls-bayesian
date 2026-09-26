@@ -96,6 +96,7 @@ def create_unit_square_mesh(communicator: MPI.Comm) -> dlx.mesh.Mesh:
         communicator, nx=2, ny=2, cell_type=dlx.mesh.CellType.triangle
     )
 
+
 # Note: x_0 is the first spatial coordinate domain of the mesh
 # On both domains, int_Omega x_0^2 dx = 1/3 and int_Omega |grad x_0|^2 dx = 1. On the unit square,
 # int_{dOmega} x_0^2 ds = 0 (x_0 = 0) + 1 (x_0 = 1) + 2 * 1/3 (y = 0 and y = 1) = 5/3.

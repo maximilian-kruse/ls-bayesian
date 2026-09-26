@@ -114,9 +114,7 @@ def center_vertex_variance(resolution: int) -> float:
         tau=helpers.TAU,
         robin_const=helpers.ROBIN_CONSTANT,
     )
-    prior = builder.SPDEPriorBuilder(
-        settings, strategies.BilaplacianComponentStrategy()
-    ).build()
+    prior = builder.SPDEPriorBuilder(settings, strategies.BilaplacianComponentStrategy()).build()
     vertex_coordinates = helpers.input_ordered_vertex_coordinates(mesh)
     center_index = np.argmin(np.linalg.norm(vertex_coordinates[:, :2] - 0.5, axis=1))
     return float(prior.apply_covariance_operator(np.eye(num_vertices)[center_index])[center_index])
@@ -292,9 +290,7 @@ def test_bilaplacian_builder_rejects_wrong_mean_length() -> None:
     )
 
     with pytest.raises(ValueError, match="Expected vertex_values to have shape"):
-        builder.SPDEPriorBuilder(
-            settings, strategies.BilaplacianComponentStrategy()
-        ).build()
+        builder.SPDEPriorBuilder(settings, strategies.BilaplacianComponentStrategy()).build()
 
 
 # --------------------------------------------------------------------------------------------------
