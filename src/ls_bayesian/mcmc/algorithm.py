@@ -20,11 +20,7 @@ class MCMCAlgorithm(ABC):
     generic propose/accept-reject step shared by every Metropolis-Hastings algorithm, together
     with `_update_cache`, a hook subclasses use to carry expensive per-state quantities (e.g. a
     potential or gradient evaluation) from one call to `compute_step` to the next instead of
-    recomputing them: on acceptance, the proposal becomes the new current state, so quantities
-    already evaluated for the proposal can be reused as the current-state quantities of the next
-    step. This matters here specifically because $\Phi$ is typically the expensive part of a
-    large-scale Bayesian inverse problem (e.g. a PDE solve), so avoiding a redundant evaluation
-    per step roughly halves the number of forward solves for the whole chain.
+    recomputing them.
 
     Methods:
         compute_step: Advance the chain by one Metropolis-Hastings step.

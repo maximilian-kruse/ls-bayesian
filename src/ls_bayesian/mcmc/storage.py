@@ -23,7 +23,7 @@ class MCMCStorage(ABC):
     type would either misrepresent a backend's actual return value or require materializing a
     disk-backed dataset in memory just to satisfy the type hint. Implementations must ensure
     `values` reflects every sample stored so far, including any not yet flushed to a backing
-    store, and must raise `ValueError` if no sample has been stored yet.
+    store, and must return `None` if no sample has been stored yet.
 
     A backend that buffers samples before writing them to a backing store (e.g. `ZarrStorage`)
     only guarantees durability up to the last `flush()`; callers that need every stored sample to
@@ -34,7 +34,7 @@ class MCMCStorage(ABC):
         flush: Flush any buffered samples to their backing store.
 
     Attributes:
-        values: All stored samples, in a backend-specific array type.
+        values: All stored samples, in a backend-specific array type, or `None` if empty.
     """
 
     # ----------------------------------------------------------------------------------------------
@@ -50,7 +50,7 @@ class MCMCStorage(ABC):
     @property
     @abstractmethod
     def values(self) -> Any:
-        """Return all stored samples, in a backend-specific array type."""
+        """Return all stored samples, in a backend-specific array type, or `None` if empty."""
 
     # ----------------------------------------------------------------------------------------------
     @abstractmethod
@@ -81,14 +81,15 @@ class NumpyStorage(MCMCStorage):
     # ----------------------------------------------------------------------------------------------
     @property
     @override
-    def values(self) -> np.ndarray[tuple[int, int], np.dtype[np.float64]]:
+    def values(self) -> np.ndarray[tuple[int, int], np.dtype[np.float64]] | None:
         """Return all stored samples, stacked along a new leading axis, as a NumPy array.
 
-        Raises:
-            ValueError: If no sample has been stored yet.
+        Returns:
+            np.ndarray[tuple[int, int], np.dtype[np.float64]] | None: Stored samples of shape
+                `(num_samples, sample_dim)`, or `None` if no sample has been stored yet.
         """
         if not self._samples:
-            raise ValueError("No samples have been stored yet.")
+            return None
         return np.stack(self._samples, axis=0)
 
     # ----------------------------------------------------------------------------------------------
@@ -135,10 +136,12 @@ class ZarrStorage(MCMCStorage):
                 larger value trades durability (samples not yet written are lost if the process is
                 interrupted) for fewer, larger writes.
             overwrite (bool, optional): Whether to overwrite an existing store at
-                `save_directory`. Defaults to `False`, which appends to an existing store.
+                `save_directory`. Defaults to `False`, which appends to an existing store; its
+                samples are then immediately available via `values`.
 
         Raises:
-            ValueError: If `chunk_size` or `buffer_size` is not greater than zero.
+            ValueError: If `chunk_size` or `buffer_size` is not greater than zero, or if an
+                existing dataset at `save_directory` is chunked differently from `chunk_size`.
         """
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be greater than zero, got {chunk_size}.")
@@ -149,7 +152,7 @@ class ZarrStorage(MCMCStorage):
         self._buffer: list[np.ndarray[tuple[int], np.dtype[np.float64]]] = []
         store = zarr.storage.LocalStore(save_directory)
         self._root = zarr.open_group(store, mode="w" if overwrite else "a")
-        self._dataset: zarr.Array | None = None
+        self._dataset: zarr.Array | None = self._open_existing_dataset()
 
     # ----------------------------------------------------------------------------------------------
     @override
@@ -162,15 +165,13 @@ class ZarrStorage(MCMCStorage):
     # ----------------------------------------------------------------------------------------------
     @property
     @override
-    def values(self) -> zarr.Array:
+    def values(self) -> zarr.Array | None:
         """Flush any buffered samples, then return the full on-disk dataset.
 
-        Raises:
-            ValueError: If no sample has been stored yet.
+        Returns:
+            zarr.Array | None: The on-disk dataset, or `None` if no sample has been stored yet.
         """
         self.flush()
-        if self._dataset is None:
-            raise ValueError("No samples have been stored yet.")
         return self._dataset
 
     # ----------------------------------------------------------------------------------------------
@@ -187,19 +188,41 @@ class ZarrStorage(MCMCStorage):
             self._dataset.append(chunk)
 
     # ----------------------------------------------------------------------------------------------
+    def _open_existing_dataset(self) -> zarr.Array | None:
+        """Open the on-disk dataset if the store already holds one, else return `None`.
+
+        Unlike creating a new dataset, opening an existing one needs no sample: its shape, chunking
+        and dtype are stored on disk.
+
+        Raises:
+            ValueError: If the existing dataset is chunked differently from `chunk_size`.
+        """
+        if "data" not in self._root:
+            return None
+        dataset = self._root["data"]
+        existing_chunk_size = dataset.chunks[0]
+        if existing_chunk_size != self._chunk_size:
+            raise ValueError(
+                f"chunk_size {self._chunk_size} does not match the existing dataset's chunk size "
+                f"{existing_chunk_size}."
+            )
+        return dataset
+
+    # ----------------------------------------------------------------------------------------------
     def _create_dataset(
         self, first_chunk: np.ndarray[tuple[int, int], np.dtype[np.float64]]
     ) -> zarr.Array:
-        """Create (or open) the on-disk dataset and write `first_chunk` to it."""
+        """Create the on-disk dataset and write `first_chunk` to it.
+
+        Creation is deferred to the first flush because the sample shape and dtype are only known
+        once the first sample has been stored.
+        """
         sample_shape = first_chunk.shape[1:]
-        if "data" in self._root:
-            dataset = self._root["data"]
-        else:
-            dataset = self._root.create_array(
-                "data",
-                shape=(0, *sample_shape),
-                chunks=(self._chunk_size, *sample_shape),
-                dtype=first_chunk.dtype,
-            )
+        dataset = self._root.create_array(
+            "data",
+            shape=(0, *sample_shape),
+            chunks=(self._chunk_size, *sample_shape),
+            dtype=first_chunk.dtype,
+        )
         dataset.append(first_chunk)
         return dataset

@@ -56,11 +56,6 @@ class MCMCQoI(ABC):
     def name(self) -> str:
         """Return the name of the QoI, used for logging."""
 
-    # ----------------------------------------------------------------------------------------------
-    def __str__(self) -> str:
-        """Return the QoI's name."""
-        return self.name()
-
 
 # --------------------------------------------------------------------------------------------------
 class ComponentQoI(MCMCQoI):
@@ -162,11 +157,6 @@ class MCMCStatistic(ABC):
     @abstractmethod
     def name(self) -> str:
         """Return the name of the statistic, used for logging."""
-
-    # ----------------------------------------------------------------------------------------------
-    def __str__(self) -> str:
-        """Return the statistic's name."""
-        return self.name()
 
 
 # --------------------------------------------------------------------------------------------------
@@ -347,7 +337,11 @@ def build(qoi: MCMCQoI, statistic: MCMCStatistic) -> MCMCOutput:
     Returns:
         MCMCOutput: Output with a column label/format derived from `qoi`/`statistic`.
     """
-    str_id = f"{qoi}" if isinstance(statistic, IdentityStatistic) else f"{statistic} of {qoi}"
+    str_id = (
+        qoi.name()
+        if isinstance(statistic, IdentityStatistic)
+        else f"{statistic.name()} of {qoi.name()}"
+    )
     str_id = f"{str_id:<12}"
     return MCMCOutput(
         qoi=qoi,
