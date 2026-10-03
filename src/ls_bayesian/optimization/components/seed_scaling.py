@@ -90,17 +90,30 @@ class BarzilaiBorweinSeedScalingSettings:
             where a correction pair passes the acceptance strategy's curvature-ratio check (which
             bounds $(y,s)/\|s\|^2$) while still having a near-degenerate $\|y\|^2$, which would
             otherwise blow up $\gamma_k=(s,y)/\|y\|^2$ and the resulting trial step size.
+        fallback_value (Real): Scale factor returned while no correction pair is stored, i.e. in
+            the first iteration (and whenever the store is empty again). Defaults to `1.0`, the
+            neutral value: no scaling. Must lie in `[gamma_min, gamma_max]`. On problems whose
+            gradient magnitude is far from unit scale in the model's inner product, the first
+            trial step is otherwise far off and needs many backtracking halvings, since no
+            correction pair is available yet to estimate the scale from; a problem-specific value
+            avoids that.
     """
 
     gamma_min: Annotated[Real, Is[lambda x: x > 0]] = 1e-2
     gamma_max: Annotated[Real, Is[lambda x: x > 0]] = 1e2
+    fallback_value: Annotated[Real, Is[lambda x: x > 0]] = 1.0
 
     def __post_init__(self) -> None:
-        """Check `gamma_min < gamma_max`"""
+        """Check `gamma_min < gamma_max` and `gamma_min <= fallback_value <= gamma_max`."""
         if self.gamma_min >= self.gamma_max:
             raise ValueError(
                 f"gamma_min ({self.gamma_min}) must be strictly less than gamma_max "
                 f"({self.gamma_max})."
+            )
+        if not self.gamma_min <= self.fallback_value <= self.gamma_max:
+            raise ValueError(
+                f"fallback_value ({self.fallback_value}) must lie within [gamma_min, gamma_max] "
+                f"= [{self.gamma_min}, {self.gamma_max}]."
             )
 
 
@@ -109,9 +122,10 @@ class BarzilaiBorweinSeedScaling(SeedScalingStrategy):
     r"""Barzilai-Borwein-style seed scaling, clamped to `[settings.gamma_min, settings.gamma_max]`.
 
     Computes $\gamma_k = (\mathbf{s}_{k-1}, \mathbf{y}_{k-1}) / (\mathbf{y}_{k-1},
-    \mathbf{y}_{k-1})$ from the most recently stored correction pair (`1.0`, i.e. no scaling, if
-    none is stored yet): the standard way L-BFGS keeps its very first trial step per iteration
-    close to the right scale, composing with a structured `SeedOperator` rather than replacing it.
+    \mathbf{y}_{k-1})$ from the most recently stored correction pair (`settings.fallback_value`,
+    by default `1.0`, i.e. no scaling, if none is stored yet): the standard way L-BFGS keeps its
+    very first trial step per iteration close to the right scale, composing with a structured
+    `SeedOperator` rather than replacing it.
     Without it, an un-scaled seed step can require many backtracking halvings every iteration on
     problems whose gradient magnitude is far from unit scale in `model`'s inner product, since a
     line search always starts from the same fixed initial step size regardless of how the objective
@@ -149,10 +163,10 @@ class BarzilaiBorweinSeedScaling(SeedScalingStrategy):
         newest_gradient_difference: np.ndarray[tuple[int], np.dtype[np.float64]] | None,
         model: OptimizationModel,
     ) -> float:
-        """Compute the clamped Barzilai-Borwein-style scale factor, or `1.0` if no correction pair
-        is stored yet."""
+        """Compute the clamped Barzilai-Borwein-style scale factor, or `settings.fallback_value`
+        if no correction pair is stored yet."""
         if newest_state_difference is None or newest_gradient_difference is None:
-            return 1.0
+            return self._settings.fallback_value
         curvature = model.evaluate_inner_product(
             newest_state_difference, newest_gradient_difference
         )
