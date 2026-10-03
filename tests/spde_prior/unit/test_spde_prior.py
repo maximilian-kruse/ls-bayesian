@@ -34,6 +34,16 @@ def vertex_space_operator(setup: helpers.ExactPriorSetup, dof_operator: np.ndarr
 
 
 # ==================================================================================================
+def test_spde_prior_mean_vector_matches_constructor_input(
+    exact_prior_setup: helpers.ExactPriorSetup,
+) -> None:
+    """`mean_vector` returns the vertex-space input exactly, not a DoF round-trip."""
+    prior = exact_prior(exact_prior_setup)
+
+    np.testing.assert_array_equal(prior.mean_vector, exact_prior_setup.mean_vector)
+
+
+# --------------------------------------------------------------------------------------------------
 def test_spde_prior_cost_and_gradient_vanish_at_mean(
     exact_prior_setup: helpers.ExactPriorSetup,
 ) -> None:
