@@ -21,6 +21,7 @@ from beartype.vale import Is
 from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.optimization.components.cautious_update import CorrectionPairAcceptanceStrategy
 from ls_bayesian.optimization.components.line_search import LineSearchStrategy
+from ls_bayesian.optimization.components.seed_scaling import SeedScalingStrategy
 from ls_bayesian.optimization.model import OptimizationModel
 from ls_bayesian.optimization.optimizer import (
     BaseOptimizer,
@@ -152,8 +153,9 @@ class _CustomLBFGSRawResult:
 class CustomLBFGSOptimizer(BaseOptimizer):
     r"""L-BFGS with cautious updating, generalized to an arbitrary inner-product space.
 
-    Combines the two-loop recursion, an Armijo backtracking line search, and cautious
-    correction-pair updating, generalized from a Cameron-Martin space to whatever inner product
+    Combines the two-loop recursion, an injected line search (e.g. `ArmijoBacktrackingLineSearch`
+    or `StrongWolfeLineSearch`), and cautious correction-pair updating, generalized from a
+    Cameron-Martin space to whatever inner product
     the [`OptimizationModel`][ls_bayesian.optimization.model.OptimizationModel] passed to `run`
     implements via `evaluate_inner_product`/`evaluate_norm`. `optimization` never depends on where
     that inner product comes from (e.g. a Cameron-Martin inner product induced by a Bayesian
@@ -183,6 +185,7 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         settings: CustomLBFGSSettings,
         line_search: LineSearchStrategy,
         acceptance_strategy: CorrectionPairAcceptanceStrategy,
+        seed_scaling_strategy: SeedScalingStrategy,
         seed_operator: SeedOperator = lambda vector: vector,
         logger: BaseLogger | None = None,
     ) -> None:
@@ -193,12 +196,16 @@ class CustomLBFGSOptimizer(BaseOptimizer):
             line_search (LineSearch): Step-size selection strategy.
             acceptance_strategy (CorrectionPairAcceptanceStrategy): Correction-pair acceptance
                 policy.
-            seed_operator (SeedOperator, optional): Initial inverse-Hessian approximation
-                $\mathbf{H}_k^0$ for the two-loop recursion. Defaults to the identity,
-                $\mathbf{H}_k^0 = \mathbf{I}$: in a Cameron-Martin space induced by a Gaussian
-                prior's covariance, the prior term's Hessian with respect to the Cameron-Martin
-                inner product is exactly the identity, making this the natural "structured seed
-                matrix" choice (Mannel & Rund 2024, Petra & Ghattas 2019).
+            seed_scaling_strategy (SeedScalingStrategy): Policy scaling `seed_operator`'s output
+                (e.g. `NoSeedScaling`, or `BarzilaiBorweinSeedScaling` -- see
+                `_two_loop_recursion`'s docstring).
+            seed_operator (SeedOperator, optional): Structured part of the initial inverse-Hessian
+                approximation $\mathbf{H}_k^0$ for the two-loop recursion. Defaults to the
+                identity, $\mathbf{H}_k^0 = \mathbf{I}$: in a Cameron-Martin space induced by a
+                Gaussian prior's covariance, the prior term's Hessian with respect to the
+                Cameron-Martin inner product is exactly the identity, making this the natural
+                "structured seed matrix" choice. Its output is further scaled by
+                `seed_scaling_strategy`.
             logger (BaseLogger | None, optional): Logger for iteration-by-iteration progress
                 reports. Defaults to `None`.
         """
@@ -206,6 +213,7 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         self._settings = settings
         self._line_search = line_search
         self._acceptance_strategy = acceptance_strategy
+        self._seed_scaling_strategy = seed_scaling_strategy
         self._seed_operator = seed_operator
 
     # ----------------------------------------------------------------------------------------------
@@ -219,9 +227,19 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         Hessian approximation $\mathbf{H}_k$ explicitly.
 
         Implements the two-loop recursion in the form of Nocedal & Wright, "Numerical
-        Optimization" (2006), Algorithm 7.4, generalized to an arbitrary inner product, via
-        `model.evaluate_inner_product`. With no stored correction pairs and the identity seed
-        operator, this reduces exactly to steepest descent, $\mathbf{p}_k = -\mathbf{g}_k$.
+        Optimization" (2006), generalized to an arbitrary inner product, via
+        `model.evaluate_inner_product`. With no stored correction pairs, the identity seed
+        operator, and `NoSeedScaling`, this reduces exactly to steepest descent,
+        $\mathbf{p}_k = -\mathbf{g}_k$.
+
+        `seed_operator`'s output is additionally scaled by whatever `seed_scaling_strategy`
+        returns, given the most recently added correction pair: this is the standard way L-BFGS
+        keeps its very first trial step per iteration close to the right scale, and composes with a
+        structured `seed_operator` rather than replacing it. Without such scaling, the identity
+        seed's unscaled step can require many backtracking halvings every iteration on problems
+        whose gradient magnitude is far from unit scale in `model`'s inner product, since the line
+        search always starts its search from the same fixed initial step size regardless of how
+        the objective is scaled.
 
         Args:
             gradient (np.ndarray[tuple[int], np.dtype[np.float64]]): Current gradient
@@ -243,7 +261,17 @@ class CustomLBFGSOptimizer(BaseOptimizer):
             q = q - eta * pair.gradient_difference
             etas.append(eta)
 
-        r = self._seed_operator(q)
+        if len(correction_pairs) > 0:
+            newest_pair = next(reversed(correction_pairs))
+            newest_state_difference = newest_pair.state_difference
+            newest_gradient_difference = newest_pair.gradient_difference
+        else:
+            newest_state_difference = None
+            newest_gradient_difference = None
+        scale_factor = self._seed_scaling_strategy.compute_scale_factor(
+            newest_state_difference, newest_gradient_difference, model
+        )
+        r = scale_factor * self._seed_operator(q)
         for pair, eta in zip(correction_pairs, reversed(etas), strict=True):
             zeta = pair.inner_product_reciprocal * inner_product(pair.gradient_difference, r)
             r = r + pair.state_difference * (eta - zeta)
@@ -283,9 +311,15 @@ class CustomLBFGSOptimizer(BaseOptimizer):
 
         while not converged and iteration < self._settings.maximum_num_iterations:
             search_direction = self._two_loop_recursion(current_gradient, correction_pairs, model)
-            directional_derivative = inner_product(current_gradient, search_direction)
+
             line_search_result = self._line_search.find_step_size(
-                current_point, search_direction, current_loss, directional_derivative, loss_function
+                current_point,
+                search_direction,
+                current_loss,
+                current_gradient,
+                loss_function,
+                gradient_function,
+                inner_product,
             )
             next_point = current_point + line_search_result.step_size * search_direction
             next_loss = line_search_result.loss
