@@ -45,6 +45,9 @@ class LogPosterior:
 
     Methods:
         evaluate_cost: Evaluate $J(m)$.
+        evaluate_likelihood_cost: Evaluate the likelihood contribution $\Phi(F(m))$ to $J(m)$
+            alone.
+        evaluate_prior_cost: Evaluate the prior contribution $R(m)$ to $J(m)$ alone.
         evaluate_gradient: Evaluate $\nabla_m J(m)$.
         evaluate_likelihood_gradient: Evaluate the likelihood contribution
             $(\nabla_m F(m))^T \nabla_u \Phi(u)$ to $\nabla_m J(m)$ alone.
@@ -89,15 +92,55 @@ class LogPosterior:
             float: $J(m)$.
         """
         self._log_debug_evaluation_start("Cost evaluation", parameter_vector)
-        likelihood_cost, prior_cost = self._compute_cost_components(parameter_vector)
-        total_cost = likelihood_cost + prior_cost
-        self._log_debug_message(f"likelihood_cost: {likelihood_cost}")
-        self._log_debug_message(f"prior_cost: {prior_cost}")
+        total_cost = self.evaluate_likelihood_cost(parameter_vector) + self.evaluate_prior_cost(
+            parameter_vector
+        )
         self._log_debug_message(f"total_cost: {total_cost}")
-        self._warn_if_not_finite("likelihood_cost", likelihood_cost)
-        self._warn_if_not_finite("prior_cost", prior_cost)
         self._warn_if_not_finite("total_cost", total_cost)
         return total_cost
+
+    # ----------------------------------------------------------------------------------------------
+    def evaluate_likelihood_cost(
+        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> float:
+        r"""Evaluate the likelihood contribution $\Phi(F(m))$ to $J(m)$, alone.
+
+        Reuses a cached forward solution, so evaluating this together with the likelihood
+        gradient at the same parameter solves the forward problem only once. Does not evaluate
+        the prior. Separated from `evaluate_prior_cost` so that a caller needing only this
+        contribution (e.g. an MCMC sampler whose reference measure is the prior, and which
+        therefore needs the potential relative to it) does not pay for the prior cost it discards.
+
+        Args:
+            parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
+
+        Returns:
+            float: $\Phi(F(m))$.
+        """
+        self._log_debug_evaluation_start("Likelihood cost evaluation", parameter_vector)
+        solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector.copy())
+        likelihood_cost = self._likelihood.evaluate_cost(solution_vector)
+        self._log_debug_message(f"likelihood_cost: {likelihood_cost}")
+        self._warn_if_not_finite("likelihood_cost", likelihood_cost)
+        return likelihood_cost
+
+    # ----------------------------------------------------------------------------------------------
+    def evaluate_prior_cost(
+        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> float:
+        r"""Evaluate the prior contribution $R(m)$ to $J(m)$, alone.
+
+        Args:
+            parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
+
+        Returns:
+            float: $R(m)$.
+        """
+        self._log_debug_evaluation_start("Prior cost evaluation", parameter_vector)
+        prior_cost = self._prior.evaluate_cost(parameter_vector.copy())
+        self._log_debug_message(f"prior_cost: {prior_cost}")
+        self._warn_if_not_finite("prior_cost", prior_cost)
+        return prior_cost
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_gradient(
@@ -187,17 +230,6 @@ class LogPosterior:
             NotImplementedError: Always, not implemented yet.
         """
         raise NotImplementedError
-
-    # ----------------------------------------------------------------------------------------------
-    def _compute_cost_components(
-        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> tuple[float, float]:
-        r"""Compute $(\Phi(F(m)), R(m))$, without logging."""
-        parameter_vector = parameter_vector.copy()
-        solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector)
-        likelihood_cost = self._likelihood.evaluate_cost(solution_vector)
-        prior_cost = self._prior.evaluate_cost(parameter_vector)
-        return likelihood_cost, prior_cost
 
     # ----------------------------------------------------------------------------------------------
     def _retrieve_or_compute_forward_solution(

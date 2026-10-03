@@ -46,6 +46,25 @@ def test_posterior_cost(posterior_setup: helpers.PosteriorSetup) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+def test_posterior_split_cost(posterior_setup: helpers.PosteriorSetup) -> None:
+    log_posterior = _build_posterior(posterior_setup)
+    parameter_vector = _random_parameter(4)
+
+    likelihood_cost = log_posterior.evaluate_likelihood_cost(parameter_vector)
+    prior_cost = log_posterior.evaluate_prior_cost(parameter_vector)
+
+    solution_vector = posterior_setup.parameter_to_solution_map.matrix @ parameter_vector
+    np.testing.assert_allclose(
+        likelihood_cost,
+        posterior_setup.likelihood_setup.likelihood.evaluate_cost(solution_vector),
+    )
+    np.testing.assert_allclose(prior_cost, posterior_setup.prior.evaluate_cost(parameter_vector))
+    np.testing.assert_allclose(
+        likelihood_cost + prior_cost, log_posterior.evaluate_cost(parameter_vector)
+    )
+
+
+# --------------------------------------------------------------------------------------------------
 def test_posterior_gradient(posterior_setup: helpers.PosteriorSetup) -> None:
     log_posterior = _build_posterior(posterior_setup)
     parameter_vector = _random_parameter(4)
