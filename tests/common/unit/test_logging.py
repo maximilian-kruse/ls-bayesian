@@ -54,6 +54,38 @@ def test_logger_writes_prefixed_messages(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+def test_logger_without_prefix_writes_plain_messages(tmp_path: Path) -> None:
+    logfile_path = tmp_path / "test.log"
+    logger = BaseLogger(LoggerSettings(print_to_console=False, logfile_path=logfile_path))
+
+    logger.info("info message")
+    logger.warning("warning message")
+    logger.debug("debug message")
+    logger.error("error message")
+    logger.close()
+
+    assert logfile_path.read_text().splitlines() == [
+        "info message",
+        "[WARNING] warning message",
+        "[DEBUG] debug message",
+        "[ERROR] error message",
+    ]
+
+
+# --------------------------------------------------------------------------------------------------
+def test_console_logger_without_prefix_prints_plain_messages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    logger = BaseLogger(LoggerSettings(print_to_console=True))
+
+    logger.info("info message")
+    logger.warning("warning message")
+    logger.close()
+
+    assert capsys.readouterr().out.splitlines() == ["info message", "[WARNING] warning message"]
+
+
+# --------------------------------------------------------------------------------------------------
 def test_close_releases_logfile(tmp_path: Path) -> None:
     logfile_path = tmp_path / "test.log"
     logger = _create_logger_with_file(logfile_path)

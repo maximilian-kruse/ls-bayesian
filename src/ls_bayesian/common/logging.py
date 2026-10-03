@@ -37,21 +37,27 @@ class LoggerSettings:
 
 # ==================================================================================================
 class _LevelAwareFormatter(logging.Formatter):
-    """Formatter that prefixes messages, and only shows the level for non-info messages."""
+    """Formatter that optionally prefixes messages, and only shows the level for non-info ones."""
 
-    def __init__(self, prefix: str) -> None:
+    def __init__(self, prefix: str | None) -> None:
         """Initialize the formatter.
 
         Args:
-            prefix (str): Prefix prepended to every message, e.g. the name of the component.
+            prefix (str | None): Prefix prepended to every message, e.g. the name of the component.
+                If `None`, info messages are written as they are, and other levels are only tagged
+                with their level.
         """
         super().__init__()
-        self._info_formatter = logging.Formatter(f"[{prefix}] %(message)s")
-        self._level_formatter = logging.Formatter(f"[{prefix}][%(levelname)s] %(message)s")
+        prefix_tag = "" if prefix is None else f"[{prefix}]"
+        info_format = "%(message)s" if prefix is None else f"{prefix_tag} %(message)s"
+        self._info_formatter = logging.Formatter(info_format)
+        self._level_formatter = logging.Formatter(f"{prefix_tag}[%(levelname)s] %(message)s")
 
     @override
     def format(self, record: logging.LogRecord) -> str:
         """Format a record as `[PREFIX] message`, or `[PREFIX][LEVEL] message` for non-info levels.
+
+        Without a prefix, this is `message` and `[LEVEL] message`, respectively.
 
         Args:
             record (logging.LogRecord): Record to format.
@@ -91,18 +97,19 @@ class BaseLogger:
         closed (bool): Whether the logger has been closed.
     """
 
-    def __init__(self, logger_settings: LoggerSettings, prefix: str) -> None:
+    def __init__(self, logger_settings: LoggerSettings, prefix: str | None = None) -> None:
         """Initialize the logger and its output channels.
 
         Args:
             logger_settings (LoggerSettings): Output channel settings.
-            prefix (str): Prefix prepended to every message, converted to upper case.
+            prefix (str | None, optional): Prefix prepended to every message, converted to upper
+                case. If `None`, messages are written without a prefix. Defaults to `None`.
         """
         pylogger_name = f"{__name__}.{next(_instance_counter)}"
         self._pylogger = logging.getLogger(pylogger_name)
         self._pylogger.setLevel(logging.DEBUG)
         self._pylogger.propagate = False
-        formatter = _LevelAwareFormatter(prefix=prefix.upper())
+        formatter = _LevelAwareFormatter(prefix=None if prefix is None else prefix.upper())
 
         if logger_settings.print_to_console:
             console_handler = logging.StreamHandler(sys.stdout)
