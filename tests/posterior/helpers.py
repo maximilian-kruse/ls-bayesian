@@ -124,7 +124,7 @@ class QuadraticPrior(interfaces.GaussianPrior):
     r"""Dense Gaussian prior with precision matrix $P$ and mean $\bar{m}$."""
 
     def __init__(self, mean_vector: np.ndarray, precision_matrix: np.ndarray, seed: int) -> None:
-        self.mean_vector = mean_vector
+        self._mean_vector = mean_vector
         self.precision_matrix = precision_matrix
         self.covariance_matrix = np.linalg.inv(precision_matrix)
         self.covariance_factor = np.linalg.cholesky(self.covariance_matrix)
@@ -134,6 +134,11 @@ class QuadraticPrior(interfaces.GaussianPrior):
     @override
     def random_vector_size(self) -> int:
         return self.covariance_factor.shape[1]
+
+    @property
+    @override
+    def mean_vector(self) -> np.ndarray:
+        return self._mean_vector
 
     @override
     def evaluate_cost(self, parameter_vector: np.ndarray) -> float:
