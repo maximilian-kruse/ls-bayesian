@@ -45,11 +45,11 @@ class LogPosterior:
 
     Methods:
         evaluate_cost: Evaluate $J(m)$.
-        evaluate_cost_components: Evaluate the likelihood and prior contributions to $J(m)$
-            separately.
         evaluate_gradient: Evaluate $\nabla_m J(m)$.
-        evaluate_gradient_components: Evaluate the likelihood and prior contributions to
-            $\nabla_m J(m)$ separately.
+        evaluate_likelihood_gradient: Evaluate the likelihood contribution
+            $(\nabla_m F(m))^T \nabla_u \Phi(u)$ to $\nabla_m J(m)$ alone.
+        evaluate_prior_gradient: Evaluate the prior contribution $\nabla_m R(m)$ to $\nabla_m J(m)$
+            alone.
         evaluate_hessian_vector_product: Not implemented yet.
     """
 
@@ -100,33 +100,13 @@ class LogPosterior:
         return total_cost
 
     # ----------------------------------------------------------------------------------------------
-    def evaluate_cost_components(
-        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> tuple[float, float]:
-        r"""Evaluate the likelihood and prior contributions to $J(m)$ separately.
-
-        Args:
-            parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
-
-        Returns:
-            tuple[float, float]: $(\Phi(F(m)), R(m))$.
-        """
-        self._log_debug_evaluation_start("Cost evaluation", parameter_vector)
-        likelihood_cost, prior_cost = self._compute_cost_components(parameter_vector)
-        self._log_debug_message(f"likelihood_cost: {likelihood_cost}")
-        self._log_debug_message(f"prior_cost: {prior_cost}")
-        self._warn_if_not_finite("likelihood_cost", likelihood_cost)
-        self._warn_if_not_finite("prior_cost", prior_cost)
-        return likelihood_cost, prior_cost
-
-    # ----------------------------------------------------------------------------------------------
     def evaluate_gradient(
         self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
         r"""Evaluate the gradient $\nabla_m J(m)$ of the negative log-posterior.
 
-        The likelihood contribution $(\nabla_m F(m))^T \nabla_u \Phi(u)$ is cached, so repeated
-        gradient evaluations at the same parameter only re-evaluate the prior gradient.
+        Simply the sum of `evaluate_likelihood_gradient` and `evaluate_prior_gradient`; see those
+        methods for a caller that needs only one contribution.
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
@@ -135,42 +115,61 @@ class LogPosterior:
             np.ndarray[tuple[int], np.dtype[np.float64]]: $\nabla_m J(m)$.
         """
         self._log_debug_evaluation_start("Gradient evaluation", parameter_vector)
-        likelihood_gradient, prior_gradient = self._compute_gradient_components(parameter_vector)
+        likelihood_gradient = self.evaluate_likelihood_gradient(parameter_vector)
+        prior_gradient = self.evaluate_prior_gradient(parameter_vector)
         total_gradient = likelihood_gradient + prior_gradient
-        self._log_debug_vector_statistics("likelihood_gradient", likelihood_gradient)
-        self._log_debug_vector_statistics("prior_gradient", prior_gradient)
         self._log_debug_vector_statistics("total_gradient", total_gradient)
-        self._warn_if_not_finite_vector("likelihood_gradient", likelihood_gradient)
-        self._warn_if_not_finite_vector("prior_gradient", prior_gradient)
         self._warn_if_not_finite_vector("total_gradient", total_gradient)
         return total_gradient
 
     # ----------------------------------------------------------------------------------------------
-    def evaluate_gradient_components(
+    def evaluate_likelihood_gradient(
         self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> tuple[
-        np.ndarray[tuple[int], np.dtype[np.float64]], np.ndarray[tuple[int], np.dtype[np.float64]]
-    ]:
-        r"""Evaluate the likelihood and prior contributions to $\nabla_m J(m)$ separately.
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Evaluate the likelihood contribution $(\nabla_m F(m))^T \nabla_u \Phi(u)$ to
+        $\nabla_m J(m)$, alone.
 
-        The likelihood contribution $(\nabla_m F(m))^T \nabla_u \Phi(u)$ is cached, so repeated
-        gradient evaluations at the same parameter only re-evaluate the prior gradient.
+        Cached, so repeated calls at the same parameter do not re-solve the forward problem or
+        re-evaluate the likelihood/forward-map gradients. Separated from `evaluate_prior_gradient`
+        so that a caller needing only this contribution (e.g. one that applies its own, exact
+        transformation to the prior term instead of `evaluate_prior_gradient`'s
+        $\mathcal{C}_\text{prior}^{-1}(m-\bar m)$) does not pay for the prior gradient it discards.
 
         Args:
             parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
 
         Returns:
-            tuple[np.ndarray[tuple[int], np.dtype[np.float64]], ...]: The likelihood contribution
-                $(\nabla_m F(m))^T \nabla_u \Phi(u)$ and the prior contribution $\nabla_m R(m)$,
-                each the same shape as the parameter. Neither array aliases the cache.
+            np.ndarray[tuple[int], np.dtype[np.float64]]: $(\nabla_m F(m))^T \nabla_u \Phi(u)$, the
+                same shape as the parameter. Does not alias the cache.
         """
-        self._log_debug_evaluation_start("Gradient evaluation", parameter_vector)
-        likelihood_gradient, prior_gradient = self._compute_gradient_components(parameter_vector)
+        self._log_debug_evaluation_start("Likelihood gradient evaluation", parameter_vector)
+        # The cache stores the parameter vector as given, so it must not alias the caller's array,
+        # which optimizers may modify in-place between evaluations.
+        likelihood_gradient = self._retrieve_or_compute_likelihood_parameter_gradient(
+            parameter_vector.copy()
+        )
         self._log_debug_vector_statistics("likelihood_gradient", likelihood_gradient)
-        self._log_debug_vector_statistics("prior_gradient", prior_gradient)
         self._warn_if_not_finite_vector("likelihood_gradient", likelihood_gradient)
+        return likelihood_gradient.copy()
+
+    # ----------------------------------------------------------------------------------------------
+    def evaluate_prior_gradient(
+        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Evaluate the prior contribution $\nabla_m R(m)$ to $\nabla_m J(m)$, alone.
+
+        Args:
+            parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
+
+        Returns:
+            np.ndarray[tuple[int], np.dtype[np.float64]]: $\nabla_m R(m)$, the same shape as the
+                parameter.
+        """
+        self._log_debug_evaluation_start("Prior gradient evaluation", parameter_vector)
+        prior_gradient = self._prior.evaluate_gradient(parameter_vector.copy())
+        self._log_debug_vector_statistics("prior_gradient", prior_gradient)
         self._warn_if_not_finite_vector("prior_gradient", prior_gradient)
-        return likelihood_gradient.copy(), prior_gradient
+        return prior_gradient
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_hessian_vector_product(
@@ -194,31 +193,11 @@ class LogPosterior:
         self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
     ) -> tuple[float, float]:
         r"""Compute $(\Phi(F(m)), R(m))$, without logging."""
-        # The cache stores the parameter vector as given, so it must not alias the caller's array,
-        # which optimizers may modify in-place between evaluations.
         parameter_vector = parameter_vector.copy()
         solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector)
         likelihood_cost = self._likelihood.evaluate_cost(solution_vector)
         prior_cost = self._prior.evaluate_cost(parameter_vector)
         return likelihood_cost, prior_cost
-
-    # ----------------------------------------------------------------------------------------------
-    def _compute_gradient_components(
-        self, parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]]
-    ) -> tuple[
-        np.ndarray[tuple[int], np.dtype[np.float64]], np.ndarray[tuple[int], np.dtype[np.float64]]
-    ]:
-        r"""Compute the likelihood contribution $(\nabla_m F(m))^T \nabla_u \Phi(u)$ and the prior
-        contribution $\nabla_m R(m)$, without logging. The likelihood contribution aliases the
-        cache and must not be exposed to callers without copying first."""
-        # The cache stores the parameter vector as given, so it must not alias the caller's array,
-        # which optimizers may modify in-place between evaluations.
-        parameter_vector = parameter_vector.copy()
-        likelihood_gradient = self._retrieve_or_compute_likelihood_parameter_gradient(
-            parameter_vector
-        )
-        prior_gradient = self._prior.evaluate_gradient(parameter_vector)
-        return likelihood_gradient, prior_gradient
 
     # ----------------------------------------------------------------------------------------------
     def _retrieve_or_compute_forward_solution(

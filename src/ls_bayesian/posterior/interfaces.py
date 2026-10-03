@@ -212,6 +212,7 @@ class GaussianPrior(ABC):
 
     Attributes:
         random_vector_size: Size of the i.i.d. normal vector $\xi$ required for sampling.
+        mean_vector: The prior mean $\overline{m}$.
     """
 
     # ----------------------------------------------------------------------------------------------
@@ -222,6 +223,21 @@ class GaussianPrior(ABC):
 
         Returns:
             int: Number of columns of the covariance factorization $\widehat{\mathcal{C}}$.
+        """
+
+    # ----------------------------------------------------------------------------------------------
+    @property
+    @abstractmethod
+    def mean_vector(self) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Return the prior mean $\overline{m}$.
+
+        Exposed so that callers needing $m - \overline{m}$ directly (e.g. to express a
+        Cameron-Martin gradient) can form it without applying the precision and covariance
+        operators in sequence, which need not exactly cancel when each is only an approximate
+        (e.g. iterative) inverse.
+
+        Returns:
+            np.ndarray[tuple[int], np.dtype[np.float64]]: Prior mean, same shape as the parameter.
         """
 
     # ----------------------------------------------------------------------------------------------
