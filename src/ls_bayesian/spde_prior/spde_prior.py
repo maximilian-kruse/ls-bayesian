@@ -42,6 +42,7 @@ class SPDEPrior:
 
     Attributes:
         random_vector_size: Size of the i.i.d. normal vector required for sampling.
+        mean_vector: The prior mean $\overline{m}$, on mesh vertices.
     """
 
     # ----------------------------------------------------------------------------------------------
@@ -86,6 +87,7 @@ class SPDEPrior:
             ValueError: Checks that covariance factor has the correct shape.
         """
         self._fem_converter = fem_converter
+        self._mean_vector_vertex = mean_vector.copy()
         self._mean_vector = self._fem_converter.convert_vertex_values_to_dofs(mean_vector)
         mean_vector_dim = self._fem_converter.global_dof_space_dim
         if not precision_operator.shape == (mean_vector_dim, mean_vector_dim):
@@ -114,6 +116,19 @@ class SPDEPrior:
     def random_vector_size(self) -> int:
         """Return the required size of the random vector for sampling."""
         return self._covariance_factorization.shape[1]
+
+    # ----------------------------------------------------------------------------------------------
+    @property
+    def mean_vector(self) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Return the prior mean $\overline{m}$, on mesh vertices.
+
+        Returned as given to `__init__`, not round-tripped through the DoF conversion used
+        internally: for a caller that needs $m - \overline{m}$ directly (e.g. to express a
+        Cameron-Martin gradient without applying the precision and covariance operators in
+        sequence, which are each realized by an iterative solve and so do not exactly cancel),
+        this avoids adding that conversion's own interpolation error.
+        """
+        return self._mean_vector_vertex
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_cost(
