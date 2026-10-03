@@ -14,6 +14,10 @@ from ls_bayesian.optimization.components.line_search import (
     ArmijoBacktrackingLineSearch,
     ArmijoBacktrackingLineSearchSettings,
 )
+from ls_bayesian.optimization.components.seed_scaling import (
+    BarzilaiBorweinSeedScaling,
+    BarzilaiBorweinSeedScalingSettings,
+)
 from tests.optimization import helpers
 
 pytestmark = pytest.mark.unit
@@ -24,6 +28,7 @@ def _default_optimizer(settings: CustomLBFGSSettings | None = None) -> CustomLBF
         settings or CustomLBFGSSettings(),
         ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
         CautiousUpdateStrategy(CautiousUpdateSettings()),
+        BarzilaiBorweinSeedScaling(BarzilaiBorweinSeedScalingSettings()),
     )
 
 
@@ -62,16 +67,18 @@ def test_two_loop_recursion_with_no_pairs_is_steepest_descent() -> None:
 
 # --------------------------------------------------------------------------------------------------
 def test_two_loop_recursion_matches_closed_form_bfgs_update_with_one_pair() -> None:
-    """With one correction pair `(s, y)` and the identity seed, the two-loop recursion is
-    mathematically equivalent to one step of the explicit BFGS inverse-Hessian update
-    `H_1 = (I - rho s y^T) H_0 (I - rho y s^T) + rho s s^T` applied to the gradient; this test
-    checks that equivalence directly against the closed-form matrix, in the Euclidean inner
-    product for an independently-computable reference."""
+    """With one correction pair `(s, y)` and the Barzilai-Borwein-scaled identity seed
+    `H_0 = gamma * I` (gamma = (s, y) / (y, y), the only stored pair being the most recent one),
+    the two-loop recursion is mathematically equivalent to one step of the explicit BFGS
+    inverse-Hessian update `H_1 = (I - rho s y^T) H_0 (I - rho y s^T) + rho s s^T` applied to the
+    gradient; this test checks that equivalence directly against the closed-form matrix, in the
+    Euclidean inner product for an independently-computable reference."""
     optimizer = _default_optimizer()
     model = helpers.ZeroModel()
     state_difference = np.array([1.0, 0.5])
     gradient_difference = np.array([0.3, 0.8])
-    inner_product_reciprocal = 1.0 / np.dot(state_difference, gradient_difference)
+    curvature = np.dot(state_difference, gradient_difference)
+    inner_product_reciprocal = 1.0 / curvature
     store = CorrectionPairStore(memory_size=1)
     store.add(
         state_difference, gradient_difference, inner_product_reciprocal=inner_product_reciprocal
@@ -81,9 +88,10 @@ def test_two_loop_recursion_matches_closed_form_bfgs_update_with_one_pair() -> N
     direction = optimizer._two_loop_recursion(gradient, store, model)
 
     identity = np.eye(2)
+    gamma = curvature / np.dot(gradient_difference, gradient_difference)
     updated_inverse_hessian = (
         identity - inner_product_reciprocal * np.outer(state_difference, gradient_difference)
-    ) @ (
+    ) @ (gamma * identity) @ (
         identity - inner_product_reciprocal * np.outer(gradient_difference, state_difference)
     ) + inner_product_reciprocal * np.outer(state_difference, state_difference)
     expected_direction = -(updated_inverse_hessian @ gradient)

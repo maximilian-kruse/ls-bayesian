@@ -18,6 +18,12 @@ from ls_bayesian.optimization.components.cautious_update import (
 from ls_bayesian.optimization.components.line_search import (
     ArmijoBacktrackingLineSearch,
     ArmijoBacktrackingLineSearchSettings,
+    StrongWolfeLineSearch,
+    StrongWolfeLineSearchSettings,
+)
+from ls_bayesian.optimization.components.seed_scaling import (
+    BarzilaiBorweinSeedScaling,
+    BarzilaiBorweinSeedScalingSettings,
 )
 from tests.optimization import helpers
 
@@ -31,6 +37,16 @@ def _default_optimizer(settings: CustomLBFGSSettings | None = None) -> CustomLBF
         settings or CustomLBFGSSettings(),
         ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
         CautiousUpdateStrategy(CautiousUpdateSettings()),
+        BarzilaiBorweinSeedScaling(BarzilaiBorweinSeedScalingSettings()),
+    )
+
+
+def _strong_wolfe_optimizer(settings: CustomLBFGSSettings | None = None) -> CustomLBFGSOptimizer:
+    return CustomLBFGSOptimizer(
+        settings or CustomLBFGSSettings(),
+        StrongWolfeLineSearch(StrongWolfeLineSearchSettings()),
+        CautiousUpdateStrategy(CautiousUpdateSettings()),
+        BarzilaiBorweinSeedScaling(BarzilaiBorweinSeedScalingSettings()),
     )
 
 
@@ -63,6 +79,25 @@ def test_converges_on_rosenbrock_with_euclidean_space() -> None:
     """Cross-check against `ScipyLBFGSBOptimizer` on the same problem: with the default (Euclidean)
     model, this backend should also converge to the known minimizer."""
     optimizer = _default_optimizer(
+        CustomLBFGSSettings(maximum_num_iterations=500, gradient_norm_tolerance=1e-6)
+    )
+    initial_guess = np.array([-1.2, 1.0, -1.0, 1.5])
+    model = helpers.RosenbrockModel()
+
+    result = optimizer.run(initial_guess, model)
+
+    assert result.success
+    np.testing.assert_allclose(
+        result.result, np.ones_like(initial_guess), atol=CONVERGENCE_ABSOLUTE_TOLERANCE
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+def test_converges_on_rosenbrock_with_strong_wolfe_line_search() -> None:
+    """`StrongWolfeLineSearch` is a drop-in alternative to `ArmijoBacktrackingLineSearch`: it
+    should also converge to the known minimizer on the same benchmark, not just in isolation
+    (`test_line_search.py`)."""
+    optimizer = _strong_wolfe_optimizer(
         CustomLBFGSSettings(maximum_num_iterations=500, gradient_norm_tolerance=1e-6)
     )
     initial_guess = np.array([-1.2, 1.0, -1.0, 1.5])
@@ -113,6 +148,7 @@ def test_raises_on_non_positive_curvature_pair_accepted_by_a_permissive_strategy
         CustomLBFGSSettings(),
         ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
         AlwaysAcceptStrategy(),
+        BarzilaiBorweinSeedScaling(BarzilaiBorweinSeedScalingSettings()),
     )
     model = helpers.LinearModel(np.array([1.0, 1.0]))
 
