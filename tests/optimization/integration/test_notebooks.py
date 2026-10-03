@@ -41,10 +41,12 @@ SCIPY_LBFGS_REFERENCE_VALUES = {
     "num_iterations": 56,
 }
 CUSTOM_LBFGS_REFERENCE_VALUES = {
-    "euclidean_num_iterations": 22,
+    "euclidean_num_iterations": 10,
     # The Hessian-matched inner product makes the two-loop recursion's identity seed reduce to the
     # exact Newton direction on this quadratic objective, converging in a single Armijo-accepted
-    # full step; see the notebook's "Run 2" markdown cell for the derivation.
+    # full step; see the notebook's "Run 2" markdown cell for the derivation. Unaffected by the seed
+    # scaling above: with zero stored correction pairs on the very first iteration, there is nothing
+    # to scale by yet, and convergence happens before a second iteration could use one.
     "natural_num_iterations": 1,
 }
 # The final loss and distance-to-minimizer are dominated by float64 roundoff once the optimizer
