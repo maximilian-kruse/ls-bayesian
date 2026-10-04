@@ -20,7 +20,10 @@ from beartype.vale import Is
 
 from ls_bayesian.common.logging import BaseLogger
 from ls_bayesian.optimization.components.cautious_update import CorrectionPairAcceptanceStrategy
-from ls_bayesian.optimization.components.line_search import LineSearchStrategy
+from ls_bayesian.optimization.components.line_search import (
+    LineSearchProblem,
+    LineSearchStrategy,
+)
 from ls_bayesian.optimization.components.seed_scaling import SeedScalingStrategy
 from ls_bayesian.optimization.model import OptimizationModel
 from ls_bayesian.optimization.optimizer import (
@@ -147,6 +150,7 @@ class _CustomLBFGSRawResult:
     num_iterations: int
     converged: bool
     final_gradient_norm: float
+    line_search_failed: bool = False
 
 
 # ==================================================================================================
@@ -167,10 +171,14 @@ class CustomLBFGSOptimizer(BaseOptimizer):
     covariance operator to a raw discretized gradient) is the caller's responsibility, performed
     outside this class, when implementing the `OptimizationModel`.
 
-    The injected [`LineSearch`][ls_bayesian.optimization.components.line_search.LineSearch] caps
-    the number of backtracking steps and raises if none succeeds, since an unbounded loop could
-    hang if `search_direction` is not a genuine descent direction due to numerical error. This
-    class adds `maximum_num_iterations` and `gradient_norm_tolerance` (Sec.
+    The injected
+    [`LineSearchStrategy`][ls_bayesian.optimization.components.line_search.LineSearchStrategy]
+    caps its number of trial steps and returns a
+    [`LineSearchResult`][ls_bayesian.optimization.components.line_search.LineSearchResult] with
+    `success=False` if none succeeds, since an unbounded loop could hang if `search_direction` is
+    not a genuine descent direction due to numerical error. On such a failure the run terminates
+    gracefully: it returns the last accepted iterate with `success=False` instead of raising.
+    This class adds `maximum_num_iterations` and `gradient_norm_tolerance` (Sec.
     `CustomLBFGSSettings`) as explicit stopping criteria.
 
     Attributes:
@@ -288,7 +296,9 @@ class CustomLBFGSOptimizer(BaseOptimizer):
     ) -> _CustomLBFGSRawResult:
         """Run the outer iteration: two-loop recursion for the direction, line search for the
         step, cautious updating for whether to store the new correction pair, until convergence or
-        `maximum_num_iterations` is reached.
+        `maximum_num_iterations` is reached, or the line search fails to find an acceptable step.
+        In the latter case the last accepted iterate is returned and the failure is
+        recorded in the raw result; the failed iteration is not reported to `callback`.
 
         Raises:
             ValueError: If the acceptance strategy accepts a correction pair with non-positive
@@ -308,19 +318,25 @@ class CustomLBFGSOptimizer(BaseOptimizer):
         gradient_norm = model.evaluate_norm(current_gradient)
         iteration = 0
         converged = gradient_norm <= self._settings.gradient_norm_tolerance
+        line_search_failed = False
 
         while not converged and iteration < self._settings.maximum_num_iterations:
             search_direction = self._two_loop_recursion(current_gradient, correction_pairs, model)
 
             line_search_result = self._line_search.find_step_size(
-                current_point,
-                search_direction,
-                current_loss,
-                current_gradient,
-                loss_function,
-                gradient_function,
-                inner_product,
+                LineSearchProblem(
+                    current_point=current_point,
+                    search_direction=search_direction,
+                    current_loss=current_loss,
+                    current_gradient=current_gradient,
+                    loss_function=loss_function,
+                    gradient_function=gradient_function,
+                    inner_product=inner_product,
+                )
             )
+            if not line_search_result.success:
+                line_search_failed = True
+                break
             next_point = current_point + line_search_result.step_size * search_direction
             next_loss = line_search_result.loss
             next_gradient = gradient_function(next_point)
@@ -354,6 +370,7 @@ class CustomLBFGSOptimizer(BaseOptimizer):
             num_iterations=iteration,
             converged=converged,
             final_gradient_norm=gradient_norm,
+            line_search_failed=line_search_failed,
         )
 
     # ----------------------------------------------------------------------------------------------
@@ -378,6 +395,11 @@ class CustomLBFGSOptimizer(BaseOptimizer):
             status_message = (
                 f"Converged: gradient norm {raw_result.final_gradient_norm:.3e} <= tolerance "
                 f"{self._settings.gradient_norm_tolerance:.3e}."
+            )
+        elif raw_result.line_search_failed:
+            status_message = (
+                f"Line search failed after {raw_result.num_iterations} iterations (gradient norm "
+                f"{raw_result.final_gradient_norm:.3e}); returning the last accepted iterate."
             )
         else:
             status_message = (

@@ -9,6 +9,11 @@ from typing import override
 import numpy as np
 
 from ls_bayesian.optimization.algorithms.scipy_lbfgs_b import ScipyLBFGSBSettings
+from ls_bayesian.optimization.components.line_search import (
+    LineSearchProblem,
+    LineSearchResult,
+    LineSearchStrategy,
+)
 from ls_bayesian.optimization.model import OptimizationModel
 from ls_bayesian.optimization.optimizer import (
     BaseOptimizer,
@@ -113,6 +118,25 @@ class LinearModel(OptimizationModel):
     @override
     def evaluate_inner_product(self, first_vector: np.ndarray, second_vector: np.ndarray) -> float:
         return float(np.dot(first_vector, second_vector))
+
+
+# ==================================================================================================
+class FailingAfterLineSearch(LineSearchStrategy):
+    """Delegates to `line_search` for the first `num_successful_calls` calls, then reports failure
+    (`success=False`, as a real line search does when it finds no acceptable step) on every
+    further call. Emulates a line search hitting the numerical floor mid-run."""
+
+    def __init__(self, line_search: LineSearchStrategy, num_successful_calls: int) -> None:
+        self._line_search = line_search
+        self._num_successful_calls = num_successful_calls
+        self._num_calls = 0
+
+    @override
+    def find_step_size(self, problem: LineSearchProblem) -> LineSearchResult:
+        self._num_calls += 1
+        if self._num_calls > self._num_successful_calls:
+            return problem.create_failed_result()
+        return self._line_search.find_step_size(problem)
 
 
 # ==================================================================================================

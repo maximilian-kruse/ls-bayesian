@@ -4,6 +4,7 @@ import pytest
 from ls_bayesian.optimization.components.line_search import (
     ArmijoBacktrackingLineSearch,
     ArmijoBacktrackingLineSearchSettings,
+    LineSearchProblem,
     StrongWolfeLineSearch,
     StrongWolfeLineSearchSettings,
 )
@@ -36,13 +37,15 @@ def test_accepts_initial_step_when_condition_holds_immediately() -> None:
     search_direction = -gradient
 
     result = line_search.find_step_size(
-        current_point,
-        search_direction,
-        _quadratic_loss(current_point),
-        gradient,
-        _quadratic_loss,
-        _quadratic_gradient,
-        _euclidean_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=_quadratic_loss(current_point),
+            current_gradient=gradient,
+            loss_function=_quadratic_loss,
+            gradient_function=_quadratic_gradient,
+            inner_product=_euclidean_inner_product,
+        )
     )
 
     assert result.step_size == settings.initial_step_size
@@ -60,13 +63,15 @@ def test_backtracks_when_initial_step_is_too_large() -> None:
     search_direction = -gradient
 
     result = line_search.find_step_size(
-        current_point,
-        search_direction,
-        _quadratic_loss(current_point),
-        gradient,
-        _quadratic_loss,
-        _quadratic_gradient,
-        _euclidean_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=_quadratic_loss(current_point),
+            current_gradient=gradient,
+            loss_function=_quadratic_loss,
+            gradient_function=_quadratic_gradient,
+            inner_product=_euclidean_inner_product,
+        )
     )
 
     assert 0.0 < result.step_size < settings.initial_step_size
@@ -76,23 +81,27 @@ def test_backtracks_when_initial_step_is_too_large() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-def test_armijo_raises_when_direction_is_not_descent() -> None:
+def test_armijo_fails_when_direction_is_not_descent() -> None:
     settings = ArmijoBacktrackingLineSearchSettings(max_backtracking_steps=5)
     line_search = ArmijoBacktrackingLineSearch(settings)
     current_point = np.array([1.0, 1.0])
     gradient = current_point
     search_direction = gradient  # ascent direction, never satisfies Armijo for a quadratic bowl
 
-    with pytest.raises(RuntimeError, match="descent"):
-        line_search.find_step_size(
-            current_point,
-            search_direction,
-            _quadratic_loss(current_point),
-            gradient,
-            _quadratic_loss,
-            _quadratic_gradient,
-            _euclidean_inner_product,
+    result = line_search.find_step_size(
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=_quadratic_loss(current_point),
+            current_gradient=gradient,
+            loss_function=_quadratic_loss,
+            gradient_function=_quadratic_gradient,
+            inner_product=_euclidean_inner_product,
         )
+    )
+
+    assert not result.success
+    assert np.isnan(result.step_size)
 
 
 # ==================================================================================================
@@ -109,13 +118,15 @@ def test_accepts_initial_step_when_both_conditions_hold_immediately() -> None:
     search_direction = -gradient
 
     result = line_search.find_step_size(
-        current_point,
-        search_direction,
-        model.evaluate_cost(current_point),
-        gradient,
-        model.evaluate_cost,
-        model.evaluate_gradient,
-        model.evaluate_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=model.evaluate_cost(current_point),
+            current_gradient=gradient,
+            loss_function=model.evaluate_cost,
+            gradient_function=model.evaluate_gradient,
+            inner_product=model.evaluate_inner_product,
+        )
     )
 
     assert result.step_size == settings.initial_step_size
@@ -136,13 +147,15 @@ def test_zoom_phase_finds_a_step_satisfying_both_strong_wolfe_conditions() -> No
     directional_derivative = model.evaluate_inner_product(gradient, search_direction)
 
     result = line_search.find_step_size(
-        current_point,
-        search_direction,
-        model.evaluate_cost(current_point),
-        gradient,
-        model.evaluate_cost,
-        model.evaluate_gradient,
-        model.evaluate_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=model.evaluate_cost(current_point),
+            current_gradient=gradient,
+            loss_function=model.evaluate_cost,
+            gradient_function=model.evaluate_gradient,
+            inner_product=model.evaluate_inner_product,
+        )
     )
 
     assert result.step_size != settings.initial_step_size, "test setup must actually force zoom"
@@ -176,13 +189,15 @@ def test_satisfies_strong_wolfe_conditions_under_weighted_inner_product() -> Non
     directional_derivative = model.evaluate_inner_product(gradient, search_direction)
 
     result = line_search.find_step_size(
-        current_point,
-        search_direction,
-        model.evaluate_cost(current_point),
-        gradient,
-        model.evaluate_cost,
-        model.evaluate_gradient,
-        model.evaluate_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=model.evaluate_cost(current_point),
+            current_gradient=gradient,
+            loss_function=model.evaluate_cost,
+            gradient_function=model.evaluate_gradient,
+            inner_product=model.evaluate_inner_product,
+        )
     )
 
     sufficient_decrease_holds = result.loss <= model.evaluate_cost(current_point) + (
@@ -200,7 +215,7 @@ def test_satisfies_strong_wolfe_conditions_under_weighted_inner_product() -> Non
 
 
 # --------------------------------------------------------------------------------------------------
-def test_strong_wolfe_raises_when_direction_is_not_descent() -> None:
+def test_strong_wolfe_fails_when_direction_is_not_descent() -> None:
     settings = StrongWolfeLineSearchSettings()
     line_search = StrongWolfeLineSearch(settings)
     model = helpers.QuadraticModel(np.eye(2), minimizer=np.zeros(2))
@@ -208,20 +223,24 @@ def test_strong_wolfe_raises_when_direction_is_not_descent() -> None:
     gradient = model.evaluate_gradient(current_point)
     search_direction = gradient  # ascent direction
 
-    with pytest.raises(RuntimeError, match="descent"):
-        line_search.find_step_size(
-            current_point,
-            search_direction,
-            model.evaluate_cost(current_point),
-            gradient,
-            model.evaluate_cost,
-            model.evaluate_gradient,
-            model.evaluate_inner_product,
+    result = line_search.find_step_size(
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=model.evaluate_cost(current_point),
+            current_gradient=gradient,
+            loss_function=model.evaluate_cost,
+            gradient_function=model.evaluate_gradient,
+            inner_product=model.evaluate_inner_product,
         )
+    )
+
+    assert not result.success
+    assert np.isnan(result.step_size)
 
 
 # --------------------------------------------------------------------------------------------------
-def test_raises_when_bracketing_budget_exhausted() -> None:
+def test_fails_when_bracketing_budget_exhausted() -> None:
     """An unbounded linear objective: the gradient is constant everywhere, so the directional
     derivative never satisfies the curvature condition (`|phi'| <= c2|phi'(0)|` would require
     `c2 >= 1`) and never changes sign either, so bracketing only ever extrapolates -- exhausting
@@ -239,20 +258,24 @@ def test_raises_when_bracketing_budget_exhausted() -> None:
     def gradient_function(point: np.ndarray) -> np.ndarray:
         return gradient_value
 
-    with pytest.raises(RuntimeError, match="bracketing"):
-        line_search.find_step_size(
-            current_point,
-            search_direction,
-            loss_function(current_point),
-            gradient_value,
-            loss_function,
-            gradient_function,
-            _euclidean_inner_product,
+    result = line_search.find_step_size(
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=loss_function(current_point),
+            current_gradient=gradient_value,
+            loss_function=loss_function,
+            gradient_function=gradient_function,
+            inner_product=_euclidean_inner_product,
         )
+    )
+
+    assert not result.success
+    assert np.isnan(result.step_size)
 
 
 # --------------------------------------------------------------------------------------------------
-def test_raises_when_zoom_budget_exhausted() -> None:
+def test_fails_when_zoom_budget_exhausted() -> None:
     """The same ill-conditioned quadratic as
     `test_zoom_phase_finds_a_step_satisfying_both_strong_wolfe_conditions` (which needs several
     zoom iterations to converge), but with `max_zoom_iterations` too small to reach one."""
@@ -263,16 +286,20 @@ def test_raises_when_zoom_budget_exhausted() -> None:
     gradient = model.evaluate_gradient(current_point)
     search_direction = -gradient
 
-    with pytest.raises(RuntimeError, match="zoom"):
-        line_search.find_step_size(
-            current_point,
-            search_direction,
-            model.evaluate_cost(current_point),
-            gradient,
-            model.evaluate_cost,
-            model.evaluate_gradient,
-            model.evaluate_inner_product,
+    result = line_search.find_step_size(
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=model.evaluate_cost(current_point),
+            current_gradient=gradient,
+            loss_function=model.evaluate_cost,
+            gradient_function=model.evaluate_gradient,
+            inner_product=model.evaluate_inner_product,
         )
+    )
+
+    assert not result.success
+    assert np.isnan(result.step_size)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -314,25 +341,29 @@ def test_strong_wolfe_step_avoids_the_degenerate_gamma_armijo_accepts() -> None:
 
     armijo = ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings())
     armijo_result = armijo.find_step_size(
-        current_point,
-        search_direction,
-        loss_function(current_point),
-        gradient,
-        loss_function,
-        gradient_function,
-        _euclidean_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=loss_function(current_point),
+            current_gradient=gradient,
+            loss_function=loss_function,
+            gradient_function=gradient_function,
+            inner_product=_euclidean_inner_product,
+        )
     )
     armijo_gamma = implied_gamma(armijo_result.step_size)
 
     wolfe = StrongWolfeLineSearch(StrongWolfeLineSearchSettings())
     wolfe_result = wolfe.find_step_size(
-        current_point,
-        search_direction,
-        loss_function(current_point),
-        gradient,
-        loss_function,
-        gradient_function,
-        _euclidean_inner_product,
+        LineSearchProblem(
+            current_point=current_point,
+            search_direction=search_direction,
+            current_loss=loss_function(current_point),
+            current_gradient=gradient,
+            loss_function=loss_function,
+            gradient_function=gradient_function,
+            inner_product=_euclidean_inner_product,
+        )
     )
     wolfe_gamma = implied_gamma(wolfe_result.step_size)
 

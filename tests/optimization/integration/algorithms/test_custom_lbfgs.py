@@ -154,3 +154,37 @@ def test_raises_on_non_positive_curvature_pair_accepted_by_a_permissive_strategy
 
     with pytest.raises(ValueError, match="non-positive curvature"):
         optimizer.run(np.zeros(2), model)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_line_search_failure_returns_last_accepted_iterate_without_success() -> None:
+    """A line search failing mid-run must end the run gracefully: the result is the last accepted
+    iterate (consistent with the recorded history), `success` is `False`, and the failed iteration
+    is neither counted nor recorded."""
+    num_successful_iterations = 2
+    optimizer = CustomLBFGSOptimizer(
+        CustomLBFGSSettings(maximum_num_iterations=100, gradient_norm_tolerance=1e-12),
+        helpers.FailingAfterLineSearch(
+            ArmijoBacktrackingLineSearch(ArmijoBacktrackingLineSearchSettings()),
+            num_successful_calls=num_successful_iterations,
+        ),
+        CautiousUpdateStrategy(CautiousUpdateSettings()),
+        BarzilaiBorweinSeedScaling(BarzilaiBorweinSeedScalingSettings()),
+    )
+    model = helpers.QuadraticModel(np.diag([1.0, 4.0, 9.0]), minimizer=np.zeros(3))
+    initial_guess = np.random.default_rng(3).normal(size=3)
+
+    result = optimizer.run(initial_guess, model)
+
+    assert not result.success
+    assert "Line search failed" in result.status_message
+    assert result.num_iterations == num_successful_iterations
+    assert len(result.loss_history) == num_successful_iterations
+    assert len(result.gradient_norm_history) == num_successful_iterations
+    assert np.all(np.isfinite(result.result))
+    assert not np.allclose(result.result, initial_guess)
+    np.testing.assert_allclose(model.evaluate_cost(result.result), result.loss_history[-1])
+    np.testing.assert_allclose(
+        model.evaluate_norm(model.evaluate_gradient(result.result)),
+        result.gradient_norm_history[-1],
+    )
