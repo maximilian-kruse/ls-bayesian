@@ -41,7 +41,14 @@ class LogPosterior:
     and gradient at the same parameter therefore solves the forward problem only once. For this to
     be valid, the components must be deterministic functions of their inputs and must not modify
     their input arrays in-place, as cached arrays are passed to them without copying. The components
-    are not exposed for modification after construction.
+    are not exposed for modification after construction; only the prior can be read, through
+    `prior`, for callers that need its covariance and precision operators (e.g. to express the
+    gradient in the Cameron-Martin geometry, or as the reference measure of an MCMC sampler) and
+    must use the very prior the posterior was built with.
+
+    Attributes:
+        prior (interfaces.GaussianPrior): The prior the posterior was built with. Read-only
+            access; it must not be modified.
 
     Methods:
         evaluate_cost: Evaluate $J(m)$.
@@ -78,6 +85,12 @@ class LogPosterior:
         self._prior = prior
         self._logger = logger
         self._cache = cache.EvaluationCache()
+
+    # ----------------------------------------------------------------------------------------------
+    @property
+    def prior(self) -> interfaces.GaussianPrior:
+        """The prior the posterior was built with; read-only, it must not be modified."""
+        return self._prior
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_cost(
