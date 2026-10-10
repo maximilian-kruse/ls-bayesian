@@ -4,6 +4,9 @@ Classes:
     MCMCStorage: ABC interface for sample storage.
     NumpyStorage: In-memory storage.
     ZarrStorage: Chunked, disk-backed storage via Zarr.
+
+Functions:
+    open_zarr_samples: Open the samples of a finished `ZarrStorage` read-only.
 """
 
 from abc import ABC, abstractmethod
@@ -12,6 +15,9 @@ from typing import Any, override
 
 import numpy as np
 import zarr
+
+# Name of the array holding the samples inside the Zarr group of a `ZarrStorage`.
+ZARR_SAMPLES_ARRAY_NAME = "data"
 
 
 # ==================================================================================================
@@ -197,9 +203,9 @@ class ZarrStorage(MCMCStorage):
         Raises:
             ValueError: If the existing dataset is chunked differently from `chunk_size`.
         """
-        if "data" not in self._root:
+        if ZARR_SAMPLES_ARRAY_NAME not in self._root:
             return None
-        dataset = self._root["data"]
+        dataset = self._root[ZARR_SAMPLES_ARRAY_NAME]
         existing_chunk_size = dataset.chunks[0]
         if existing_chunk_size != self._chunk_size:
             raise ValueError(
@@ -219,10 +225,35 @@ class ZarrStorage(MCMCStorage):
         """
         sample_shape = first_chunk.shape[1:]
         dataset = self._root.create_array(
-            "data",
+            ZARR_SAMPLES_ARRAY_NAME,
             shape=(0, *sample_shape),
             chunks=(self._chunk_size, *sample_shape),
             dtype=first_chunk.dtype,
         )
         dataset.append(first_chunk)
         return dataset
+
+
+# ==================================================================================================
+def open_zarr_samples(save_directory: Path) -> zarr.Array:
+    """Open the samples written by a `ZarrStorage` read-only, e.g. for postprocessing.
+
+    The array is read lazily, slice by slice, so a chain larger than memory can be processed
+    block by block; see [`ls_bayesian.mcmc.diagnostics`][ls_bayesian.mcmc.diagnostics].
+
+    Args:
+        save_directory (Path): Directory of the Zarr store, i.e. the `save_directory` the
+            `ZarrStorage` was created with.
+
+    Returns:
+        zarr.Array: The samples, shape `(num_samples, sample_dim)`.
+
+    Raises:
+        FileNotFoundError: If `save_directory` holds no store with samples.
+    """
+    if not save_directory.is_dir():
+        raise FileNotFoundError(f"No Zarr store at {save_directory}.")
+    root = zarr.open_group(zarr.storage.LocalStore(save_directory, read_only=True), mode="r")
+    if ZARR_SAMPLES_ARRAY_NAME not in root:
+        raise FileNotFoundError(f"The Zarr store at {save_directory} holds no samples.")
+    return root[ZARR_SAMPLES_ARRAY_NAME]

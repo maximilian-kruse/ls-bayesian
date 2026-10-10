@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import zarr
 
-from ls_bayesian.mcmc.storage import NumpyStorage, ZarrStorage
+from ls_bayesian.mcmc.storage import NumpyStorage, ZarrStorage, open_zarr_samples
 
 pytestmark = pytest.mark.unit
 
@@ -161,3 +161,24 @@ def test_zarr_storage_rejects_non_positive_chunk_or_buffer_size(
 ) -> None:
     with pytest.raises(ValueError, match="greater than zero"):
         ZarrStorage(tmp_path, chunk_size=chunk_size, buffer_size=buffer_size)
+
+
+# ==================================================================================================
+def test_open_zarr_samples_reads_what_zarr_storage_wrote(tmp_path: Path) -> None:
+    storage_under_test = ZarrStorage(tmp_path / "samples.zarr", chunk_size=2)
+    samples = np.arange(10.0).reshape(5, 2)
+    for sample in samples:
+        storage_under_test.store(sample)
+
+    opened = open_zarr_samples(tmp_path / "samples.zarr")
+
+    np.testing.assert_array_equal(opened[:], samples)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_open_zarr_samples_rejects_missing_store_and_store_without_samples(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="No Zarr store"):
+        open_zarr_samples(tmp_path / "missing.zarr")
+    ZarrStorage(tmp_path / "empty.zarr", chunk_size=2)
+    with pytest.raises(FileNotFoundError, match="holds no samples"):
+        open_zarr_samples(tmp_path / "empty.zarr")
