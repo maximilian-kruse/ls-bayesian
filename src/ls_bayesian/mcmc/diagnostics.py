@@ -31,6 +31,7 @@ Classes:
 
 Functions:
     compute_autocovariance: Mean and autocovariance of a chain segment, streamed over blocks.
+    compute_autocorrelation: Autocorrelation function of a chain segment.
     compute_effective_sample_size: Effective sample size from the autocovariances of chains.
     estimate_effective_sample_size: Effective sample size of one chain, split into two halves.
 """
@@ -190,6 +191,42 @@ def compute_autocovariance(
         )
 
     return AutocovarianceEstimate(mean, lagged_product_sums / num_samples, num_samples)
+
+
+# ==================================================================================================
+def compute_autocorrelation(
+    chain: ChainStore,
+    max_lag: int,
+    start: int = 0,
+    stop: int | None = None,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+) -> np.ndarray[tuple[int, int], np.dtype[np.float64]]:
+    r"""Compute the autocorrelation function $\hat\rho_k = \hat c_k / \hat c_0$ of a chain segment.
+
+    The ordinary single-chain estimate over the whole segment, from the biased autocovariance of
+    `compute_autocovariance` (so $|\hat\rho_k| \le 1$ and $\hat\rho_0 = 1$). It is not the
+    split-chain estimate inside `compute_effective_sample_size`, which also contains the variance
+    of the half-chain means and is not meant to be read as a function of the lag.
+
+    Args:
+        chain (ChainStore): Chain, shape `(num_samples, num_components)`.
+        max_lag (int): Largest lag $K$; must be smaller than the segment length.
+        start (int): First sample of the segment. Defaults to `0`.
+        stop (int | None): End of the segment (exclusive). Defaults to the end of the chain.
+        block_size (int): Number of samples read at once. Defaults to `DEFAULT_BLOCK_SIZE`.
+
+    Returns:
+        np.ndarray: Autocorrelation, shape `(K + 1, num_components)`; `nan` for a constant
+            component.
+
+    Raises:
+        ValueError: As `compute_autocovariance`.
+    """
+    autocovariance = compute_autocovariance(chain, max_lag, start, stop, block_size).autocovariance
+    with np.errstate(divide="ignore", invalid="ignore"):
+        autocorrelation = autocovariance / autocovariance[0]
+    autocorrelation[:, autocovariance[0] == 0.0] = np.nan
+    return autocorrelation
 
 
 # ==================================================================================================

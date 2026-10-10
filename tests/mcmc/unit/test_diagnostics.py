@@ -5,6 +5,7 @@ import pytest
 
 from ls_bayesian.mcmc.diagnostics import (
     AutocovarianceEstimate,
+    compute_autocorrelation,
     compute_autocovariance,
     compute_effective_sample_size,
     estimate_effective_sample_size,
@@ -243,3 +244,36 @@ def test_estimate_dataclass_holds_what_it_was_given() -> None:
 
     assert estimate.num_samples == 10
     assert estimate.autocovariance.shape == (3, 2)
+
+
+# ==================================================================================================
+def test_autocorrelation_is_normalized_autocovariance_and_starts_at_one() -> None:
+    chain = np.random.default_rng(13).normal(size=(80, 3))
+
+    autocorrelation = compute_autocorrelation(chain, max_lag=12, block_size=9)
+
+    expected = direct_autocovariance(chain, 12) / chain.var(axis=0)
+    np.testing.assert_allclose(autocorrelation, expected, atol=1e-12)
+    np.testing.assert_allclose(autocorrelation[0], 1.0)
+    assert np.all(np.abs(autocorrelation) <= 1.0 + 1e-12)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_autocorrelation_of_ar1_chain_decays_geometrically() -> None:
+    coefficient = 0.7
+    chain = generate_ar1_chain(coefficient, 200_000, 1, np.random.default_rng(14))
+
+    autocorrelation = compute_autocorrelation(chain, max_lag=5, block_size=20_000)
+
+    np.testing.assert_allclose(autocorrelation[:, 0], coefficient ** np.arange(6), atol=0.02)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_autocorrelation_of_constant_component_is_nan() -> None:
+    chain = np.random.default_rng(15).normal(size=(50, 2))
+    chain[:, 0] = 2.0
+
+    autocorrelation = compute_autocorrelation(chain, max_lag=4)
+
+    assert np.isnan(autocorrelation[:, 0]).all()
+    assert np.isfinite(autocorrelation[:, 1]).all()
