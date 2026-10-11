@@ -4,7 +4,14 @@ import numpy as np
 import pytest
 import zarr
 
-from ls_bayesian.mcmc.storage import NumpyStorage, ZarrStorage
+from ls_bayesian.mcmc.storage import (
+    MappedSampleStore,
+    NumpyStorage,
+    SampleStore,
+    ZarrStorage,
+    iterate_sample_blocks,
+    open_zarr_samples,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -161,3 +168,104 @@ def test_zarr_storage_rejects_non_positive_chunk_or_buffer_size(
 ) -> None:
     with pytest.raises(ValueError, match="greater than zero"):
         ZarrStorage(tmp_path, chunk_size=chunk_size, buffer_size=buffer_size)
+
+
+# ==================================================================================================
+def test_open_zarr_samples_reads_what_zarr_storage_wrote(tmp_path: Path) -> None:
+    storage_under_test = ZarrStorage(tmp_path / "samples.zarr", chunk_size=2)
+    samples = np.arange(10.0).reshape(5, 2)
+    for sample in samples:
+        storage_under_test.store(sample)
+
+    opened = open_zarr_samples(tmp_path / "samples.zarr")
+
+    np.testing.assert_array_equal(opened[:], samples)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_open_zarr_samples_rejects_missing_store_and_store_without_samples(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="No Zarr store"):
+        open_zarr_samples(tmp_path / "missing.zarr")
+    ZarrStorage(tmp_path / "empty.zarr", chunk_size=2)
+    with pytest.raises(FileNotFoundError, match="holds no samples"):
+        open_zarr_samples(tmp_path / "empty.zarr")
+
+
+# ==================================================================================================
+def test_numpy_and_zarr_arrays_satisfy_sample_store_protocol(tmp_path: Path) -> None:
+    zarr_array = zarr.create_array(tmp_path / "samples.zarr", shape=(3, 2), dtype=np.float64)
+
+    assert isinstance(np.zeros((3, 2)), SampleStore)
+    assert isinstance(zarr_array, SampleStore)
+    assert not isinstance(object(), SampleStore)
+
+
+# ==================================================================================================
+@pytest.mark.parametrize("block_size", [1, 3, 7, 10, 100])
+def test_iterate_sample_blocks_concatenates_to_samples_after_burn_in(block_size: int) -> None:
+    samples = np.arange(20.0).reshape(10, 2)
+
+    blocks = list(iterate_sample_blocks(samples, burn_in=2, block_size=block_size))
+
+    assert all(0 < block.shape[0] <= block_size for block in blocks)
+    np.testing.assert_array_equal(np.concatenate(blocks), samples[2:])
+
+
+# --------------------------------------------------------------------------------------------------
+def test_iterate_sample_blocks_reads_zarr_store_like_numpy_array(tmp_path: Path) -> None:
+    samples = np.random.default_rng(0).normal(size=(25, 3))
+    zarr_array = zarr.create_array(tmp_path / "samples.zarr", shape=samples.shape, dtype=np.float64)
+    zarr_array[:] = samples
+
+    blocks = list(iterate_sample_blocks(zarr_array, burn_in=4, block_size=6))
+
+    assert all(isinstance(block, np.ndarray) for block in blocks)
+    np.testing.assert_array_equal(np.concatenate(blocks), samples[4:])
+
+
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"burn_in": -1}, "burn_in"),
+        ({"burn_in": 5}, "burn_in"),
+        ({"burn_in": 6}, "burn_in"),
+        ({"block_size": 0}, "block_size"),
+        ({"block_size": -3}, "block_size"),
+    ],
+)
+def test_iterate_sample_blocks_rejects_invalid_arguments(arguments: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        next(iterate_sample_blocks(np.zeros((5, 2)), **arguments))
+
+
+# ==================================================================================================
+def test_mapped_sample_store_applies_transform_to_every_slice() -> None:
+    samples = np.arange(12.0).reshape(6, 2)
+
+    mapped = MappedSampleStore(samples, lambda block: block**2)
+
+    assert mapped.shape == samples.shape
+    np.testing.assert_allclose(mapped[1:4], samples[1:4] ** 2)
+    np.testing.assert_allclose(mapped[:], samples**2)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_mapped_sample_store_streams_through_iterate_sample_blocks() -> None:
+    samples = np.random.default_rng(1).normal(size=(17, 3))
+
+    mapped = MappedSampleStore(samples, np.sin)
+    blocks = list(iterate_sample_blocks(mapped, burn_in=3, block_size=5))
+
+    np.testing.assert_allclose(np.concatenate(blocks), np.sin(samples[3:]))
+    assert isinstance(mapped, SampleStore)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_mapped_sample_store_does_not_modify_base_samples() -> None:
+    samples = np.arange(6.0).reshape(3, 2)
+    original = samples.copy()
+
+    MappedSampleStore(samples, lambda block: block * 2.0)[:]
+
+    np.testing.assert_array_equal(samples, original)

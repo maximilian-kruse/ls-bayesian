@@ -25,6 +25,70 @@ def random_spd_matrix(rng: np.random.Generator, dim: int) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------------------------------
+def generate_ar1_chain(
+    autoregression_coefficient: float,
+    num_samples: int,
+    num_components: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    r"""Stationary AR(1) chains $x_t = \phi x_{t-1} + \varepsilon_t$ with unit marginal variance.
+
+    Their integrated autocorrelation time is $(1 + \phi) / (1 - \phi)$.
+    """
+    innovation_scale = np.sqrt(1 - autoregression_coefficient**2)
+    innovations = innovation_scale * rng.normal(size=(num_samples, num_components))
+    chain = np.empty((num_samples, num_components))
+    chain[0] = rng.normal(size=num_components)
+    for index in range(1, num_samples):
+        chain[index] = autoregression_coefficient * chain[index - 1] + innovations[index]
+    return chain
+
+
+# --------------------------------------------------------------------------------------------------
+def reference_effective_sample_size(chains: np.ndarray) -> float:
+    """Effective sample size of `chains` (shape `(num_chains, num_draws)`), by a plain loop port of
+    the algorithm of `arviz.ess(method="mean")` (Vehtari et al., 2021), as independent reference."""
+    num_chains, num_draws = chains.shape
+    centered = chains - chains.mean(axis=1, keepdims=True)
+    autocovariance = np.stack(
+        [
+            [(c[: num_draws - lag] * c[lag:]).sum() / num_draws for lag in range(num_draws)]
+            for c in centered
+        ]
+    )
+    mean_variance = np.mean(autocovariance[:, 0]) * num_draws / (num_draws - 1.0)
+    variance_plus = mean_variance * (num_draws - 1.0) / num_draws
+    if num_chains > 1:
+        variance_plus += np.var(chains.mean(axis=1), ddof=1)
+    rho = np.zeros(num_draws)
+    rho_even = 1.0
+    rho[0] = rho_even
+    rho_odd = 1.0 - (mean_variance - np.mean(autocovariance[:, 1])) / variance_plus
+    rho[1] = rho_odd
+    t = 1
+    while t < (num_draws - 3) and (rho_even + rho_odd) > 0.0:
+        rho_even = 1.0 - (mean_variance - np.mean(autocovariance[:, t + 1])) / variance_plus
+        rho_odd = 1.0 - (mean_variance - np.mean(autocovariance[:, t + 2])) / variance_plus
+        if (rho_even + rho_odd) >= 0:
+            rho[t + 1] = rho_even
+            rho[t + 2] = rho_odd
+        t += 2
+    max_t = t - 2
+    if rho_even > 0:
+        rho[max_t + 1] = rho_even
+    t = 1
+    while t <= max_t - 2:
+        if (rho[t + 1] + rho[t + 2]) > (rho[t - 1] + rho[t]):
+            rho[t + 1] = (rho[t - 1] + rho[t]) / 2.0
+            rho[t + 2] = rho[t + 1]
+        t += 2
+    total = num_chains * num_draws
+    tau = -1.0 + 2.0 * np.sum(rho[: max_t + 1]) + np.sum(rho[max_t + 1 : max_t + 2])
+    tau = max(tau, 1 / np.log10(total))
+    return total / tau
+
+
+# --------------------------------------------------------------------------------------------------
 def gaussian_posterior_moments(
     hessian: np.ndarray, minimizer: np.ndarray, prior_covariance: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
