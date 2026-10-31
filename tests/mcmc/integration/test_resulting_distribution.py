@@ -7,6 +7,7 @@ import pytest
 from ls_bayesian.mcmc.algorithm import MCMCAlgorithm
 from ls_bayesian.mcmc.algorithms.mala import MALAAlgorithm
 from ls_bayesian.mcmc.algorithms.pcn import PCNAlgorithm
+from ls_bayesian.mcmc.algorithms.phmc import PHMCAlgorithm
 from ls_bayesian.mcmc.algorithms.pmala import PMALAAlgorithm
 from tests.mcmc import helpers
 
@@ -39,6 +40,11 @@ def _build_pmala(setup: helpers.QuadraticGaussianSetup, step_width: float) -> MC
     return PMALAAlgorithm(setup.to_model(setup.reference), step_width)
 
 
+# --------------------------------------------------------------------------------------------------
+def _build_phmc(setup: helpers.QuadraticGaussianSetup, step_width: float) -> MCMCAlgorithm:
+    return PHMCAlgorithm(setup.to_model(setup.reference), step_width, num_steps=5, jitter=0.2)
+
+
 # ==================================================================================================
 @dataclass(frozen=True)
 class _ChainCase:
@@ -69,7 +75,8 @@ class _ChainCase:
 
 
 # Lag-1-autocorrelation estimates at each case's step size on its fixed problem gave integrated
-# autocorrelation times of ~22 (pcn), ~6.7 (mala), ~6.4 (pmala).
+# autocorrelation times of ~22 (pcn), ~6.7 (mala), ~6.4 (pmala), ~0.5 (phmc: 5 leapfrog steps of
+# angle 0.08, jittered by 20 %, anti-correlated).
 _CHAIN_CASES = {
     "pcn": _ChainCase(
         setup_seed=120,
@@ -105,6 +112,18 @@ _CHAIN_CASES = {
             "acceptance_rate": 0.563875,
             "mean_error_norm": 0.112988818742305,
             "std_ratio_error_norm": 0.0390618858571281,
+        },
+    ),
+    "phmc": _ChainCase(
+        setup_seed=140,
+        rng_seed=141,
+        step_width=0.08,
+        build_algorithm=_build_phmc,
+        assumed_integrated_autocorrelation_time=10,
+        reference_values={
+            "acceptance_rate": 0.931125,
+            "mean_error_norm": 0.0233140530889457,
+            "std_ratio_error_norm": 0.030549800435971733,
         },
     ),
 }

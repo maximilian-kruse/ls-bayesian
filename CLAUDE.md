@@ -28,8 +28,11 @@ test helpers) wire concrete pieces together.
   (mirrors `SPDEPrior` API); caches forward/adjoint quantities.
 - `optimization/`: `BaseOptimizer` (template over `_run_impl`) on `OptimizationModel`;
   L-BFGS variants built from strategy components.
-- `mcmc/`: `Sampler` drives `MCMCAlgorithm`s (pCN, MALA, pMALA); proposal reference
-  measure (`measures.py`) is deliberately separate from `GaussianPrior`.
+- `mcmc/`: `Sampler` drives `MCMCAlgorithm`s (pCN, MALA, pMALA, PHMC); proposal
+  reference measure (`measures.py`) is deliberately separate from `GaussianPrior`. `PHMCAlgorithm` is
+  the infinity-mHMC of Beskos et al. (2017) with a fixed Gaussian `approximation` as mass matrix
+  (leapfrog of angle `step_width`, `num_steps` steps, optional step angle `jitter`); `integrate`
+  gives a trajectory with its energy error, also after every step.
 - `lowrank/`: placeholder.
 
 Tutorial notebooks (`tutorials/<sub>/`) are executed as integration tests via
