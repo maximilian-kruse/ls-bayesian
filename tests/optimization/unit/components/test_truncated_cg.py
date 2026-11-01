@@ -113,3 +113,99 @@ def test_zero_gradient_needs_no_iterations() -> None:
 
     assert result.num_iterations == 0
     np.testing.assert_allclose(result.direction, np.zeros(3))
+
+
+# ==================================================================================================
+def test_trust_region_boundary_step_has_the_radius_as_norm() -> None:
+    rng = np.random.default_rng(4)
+    matrix = helpers.random_spd_matrix(rng, DIMENSION)
+    gradient = rng.normal(size=DIMENSION)
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+    full = solver.solve(lambda v: matrix @ v, gradient, _euclidean, TOLERANCE)
+    radius = 0.4 * np.linalg.norm(full.direction)
+
+    result = solver.solve(
+        lambda v: matrix @ v, gradient, _euclidean, TOLERANCE, trust_region_radius=radius
+    )
+
+    assert result.reason is TruncationReason.TRUST_REGION_BOUNDARY
+    assert np.linalg.norm(result.direction) == pytest.approx(radius, rel=1e-10)
+    assert _euclidean(gradient, result.direction) < 0.0
+
+
+# --------------------------------------------------------------------------------------------------
+def test_large_trust_region_gives_the_unconstrained_solution() -> None:
+    rng = np.random.default_rng(5)
+    matrix = helpers.random_spd_matrix(rng, DIMENSION)
+    gradient = rng.normal(size=DIMENSION)
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+
+    unconstrained = solver.solve(lambda v: matrix @ v, gradient, _euclidean, TOLERANCE)
+    constrained = solver.solve(
+        lambda v: matrix @ v, gradient, _euclidean, TOLERANCE, trust_region_radius=1e6
+    )
+
+    np.testing.assert_allclose(constrained.direction, unconstrained.direction)
+    assert constrained.reason is TruncationReason.CONVERGED
+
+
+# --------------------------------------------------------------------------------------------------
+def test_tiny_trust_region_gives_a_scaled_steepest_descent_step() -> None:
+    rng = np.random.default_rng(6)
+    matrix = helpers.random_spd_matrix(rng, DIMENSION)
+    gradient = rng.normal(size=DIMENSION)
+    radius = 1e-3
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+
+    result = solver.solve(
+        lambda v: matrix @ v, gradient, _euclidean, TOLERANCE, trust_region_radius=radius
+    )
+
+    assert result.num_iterations == 1
+    np.testing.assert_allclose(
+        result.direction, -radius * gradient / np.linalg.norm(gradient), rtol=1e-12
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+def test_negative_curvature_with_trust_region_goes_to_the_boundary() -> None:
+    matrix = np.diag([4.0, 1.0, -1.0])
+    gradient = np.array([1.0, 1.0, 1.0])
+    radius = 2.0
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+
+    result = solver.solve(
+        lambda v: matrix @ v, gradient, _euclidean, 1e-12, trust_region_radius=radius
+    )
+
+    assert result.reason is TruncationReason.NON_POSITIVE_CURVATURE
+    assert np.linalg.norm(result.direction) == pytest.approx(radius, rel=1e-10)
+    assert _euclidean(gradient, result.direction) < 0.0
+
+
+# --------------------------------------------------------------------------------------------------
+def test_returned_residual_gives_the_quadratic_model_value() -> None:
+    rng = np.random.default_rng(7)
+    matrix = helpers.random_spd_matrix(rng, DIMENSION)
+    gradient = rng.normal(size=DIMENSION)
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+    full = solver.solve(lambda v: matrix @ v, gradient, _euclidean, TOLERANCE)
+
+    for radius in (None, 0.3 * np.linalg.norm(full.direction)):
+        result = solver.solve(
+            lambda v: matrix @ v, gradient, _euclidean, 1e-3, trust_region_radius=radius
+        )
+        direction = result.direction
+        model_value = gradient @ direction + 0.5 * direction @ matrix @ direction
+        assert result.residual is not None
+        assert 0.5 * (gradient @ direction + direction @ result.residual) == pytest.approx(
+            model_value, rel=1e-10
+        )
+        np.testing.assert_allclose(result.residual, matrix @ direction + gradient, atol=1e-10)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_non_positive_radius_is_rejected() -> None:
+    solver = TruncatedConjugateGradient(TruncatedCGSettings())
+    with pytest.raises(ValueError, match="trust_region_radius"):
+        solver.solve(lambda v: v, np.ones(3), _euclidean, 1e-6, trust_region_radius=0.0)

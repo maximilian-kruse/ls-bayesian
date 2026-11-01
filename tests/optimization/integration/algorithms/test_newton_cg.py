@@ -6,7 +6,11 @@ from typing import override
 import numpy as np
 import pytest
 
-from ls_bayesian.optimization.algorithms.newton_cg import NewtonCGOptimizer, NewtonCGSettings
+from ls_bayesian.optimization.algorithms.newton_cg import (
+    NewtonCGOptimizer,
+    NewtonCGSettings,
+    TrustRegionSettings,
+)
 from ls_bayesian.optimization.components.line_search import (
     ArmijoBacktrackingLineSearch,
     ArmijoBacktrackingLineSearchSettings,
@@ -106,3 +110,65 @@ def test_history_has_one_entry_per_iteration() -> None:
     assert result.loss_history.size == result.num_iterations
     assert result.gradient_norm_history.size == result.num_iterations
     assert np.all(np.diff(result.loss_history) <= 0.0)
+
+
+# ==================================================================================================
+def test_trust_region_converges_on_rosenbrock() -> None:
+    optimizer = NewtonCGOptimizer(
+        NewtonCGSettings(
+            maximum_num_iterations=500,
+            gradient_norm_tolerance=1e-8,
+            trust_region=TrustRegionSettings(),
+        )
+    )
+
+    result = optimizer.run(np.array([-1.2, 1.0, -1.2, 1.0]), _RosenbrockWithHessianModel())
+
+    assert result.success
+    np.testing.assert_allclose(result.result, np.ones(4), atol=CONVERGENCE_ABSOLUTE_TOLERANCE)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_trust_region_with_small_initial_radius_expands_on_a_quadratic() -> None:
+    rng = np.random.default_rng(1)
+    dim = 10
+    matrix = helpers.random_spd_matrix(rng, dim)
+    minimizer = rng.random(dim)
+    model = helpers.QuadraticModel(matrix, minimizer)
+    optimizer = NewtonCGOptimizer(
+        NewtonCGSettings(
+            gradient_norm_tolerance=1e-6,
+            maximum_forcing_term=1e-6,
+            minimum_forcing_term=1e-10,
+            trust_region=TrustRegionSettings(initial_radius=1e-3),
+        )
+    )
+
+    result = optimizer.run(np.zeros(dim), model)
+
+    assert result.success
+    np.testing.assert_allclose(result.result, minimizer, atol=1e-5)
+    assert np.all(np.diff(result.loss_history) <= 0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_trust_region_ill_conditioned_quadratic() -> None:
+    rng = np.random.default_rng(0)
+    dim = 20
+    orthogonal, _ = np.linalg.qr(rng.normal(size=(dim, dim)))
+    matrix = orthogonal @ np.diag(np.logspace(0.0, 8.0, dim)) @ orthogonal.T
+    minimizer = rng.random(dim)
+    model = helpers.QuadraticModel(matrix, minimizer)
+    optimizer = NewtonCGOptimizer(
+        NewtonCGSettings(
+            gradient_norm_tolerance=1e-4,
+            maximum_forcing_term=1e-6,
+            minimum_forcing_term=1e-10,
+            trust_region=TrustRegionSettings(),
+        )
+    )
+
+    result = optimizer.run(np.zeros(dim), model)
+
+    assert result.success
+    np.testing.assert_allclose(result.result, minimizer, atol=1e-6)
