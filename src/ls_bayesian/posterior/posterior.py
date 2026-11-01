@@ -60,6 +60,8 @@ class LogPosterior:
             $(\nabla_m F(m))^T \nabla_u \Phi(u)$ to $\nabla_m J(m)$ alone.
         evaluate_prior_gradient: Evaluate the prior contribution $\nabla_m R(m)$ to $\nabla_m J(m)$
             alone.
+        evaluate_gauss_newton_hessian_vector_product: Evaluate the Gauss-Newton Hessian of the
+            likelihood contribution, applied to a direction.
         evaluate_hessian_vector_product: Not implemented yet.
     """
 
@@ -226,6 +228,43 @@ class LogPosterior:
         self._log_debug_vector_statistics("prior_gradient", prior_gradient)
         self._warn_if_not_finite_vector("prior_gradient", prior_gradient)
         return prior_gradient
+
+    # ----------------------------------------------------------------------------------------------
+    def evaluate_gauss_newton_hessian_vector_product(
+        self,
+        parameter_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
+        direction_vector: np.ndarray[tuple[int], np.dtype[np.float64]],
+    ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
+        r"""Evaluate $J^T \nabla_u^2 \Phi(u)\, J\, \hat{m}$ with $J = \nabla_m F(m)$, $u = F(m)$.
+
+        This is the Gauss-Newton Hessian of the likelihood contribution $\Phi(F(m))$: the exact
+        Hessian without the term that contains the second derivative of $F$. It is symmetric and
+        positive semi-definite for a convex $\Phi$, and exact for a linear $F$. It acts on the
+        parameter vector itself, not on a Riesz representer. The prior contribution is not
+        included. The cost is one Jacobian-vector product, one likelihood Hessian-vector product
+        and one transposed Jacobian product; the forward solution is taken from the cache.
+
+        Args:
+            parameter_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Parameter $m$.
+            direction_vector (np.ndarray[tuple[int], np.dtype[np.float64]]): Direction $\hat{m}$.
+
+        Returns:
+            np.ndarray[tuple[int], np.dtype[np.float64]]: Gauss-Newton Hessian-vector product,
+                same shape as the parameter.
+        """
+        self._log_debug_evaluation_start("Gauss-Newton Hessian-vector product", parameter_vector)
+        solution_vector = self._retrieve_or_compute_forward_solution(parameter_vector)
+        solution_direction = self._parameter_to_solution_map.evaluate_jacobian_vector_product(
+            solution_vector, parameter_vector.copy(), direction_vector.copy()
+        )
+        likelihood_direction = self._likelihood.evaluate_hessian_vector_product(
+            solution_vector, solution_direction
+        )
+        product = self._parameter_to_solution_map.evaluate_gradient(
+            solution_vector, parameter_vector.copy(), likelihood_direction
+        )
+        self._warn_if_not_finite_vector("gauss_newton_hessian_vector_product", product)
+        return product
 
     # ----------------------------------------------------------------------------------------------
     def evaluate_hessian_vector_product(

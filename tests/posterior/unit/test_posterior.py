@@ -194,6 +194,84 @@ def test_posterior_hessian_vector_product_not_implemented(
 
 
 # --------------------------------------------------------------------------------------------------
+def test_posterior_gauss_newton_product_matches_dense_matrix_for_linear_forward_map(
+    posterior_setup: helpers.PosteriorSetup,
+) -> None:
+    log_posterior = _build_posterior(posterior_setup)
+    parameter_vector = _random_parameter(4)
+    direction_vector = _random_parameter(5)
+    forward_matrix = posterior_setup.parameter_to_solution_map.matrix
+    observation_matrix = posterior_setup.likelihood_setup.observation_matrix
+    precision_matrix = posterior_setup.likelihood_setup.precision_matrix
+
+    product = log_posterior.evaluate_gauss_newton_hessian_vector_product(
+        parameter_vector, direction_vector
+    )
+
+    expected = (
+        forward_matrix.T
+        @ (observation_matrix.T @ precision_matrix @ observation_matrix @ forward_matrix)
+        @ direction_vector
+    )
+    np.testing.assert_allclose(product, expected, rtol=1e-10)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_posterior_gauss_newton_product_matches_finite_difference_jacobian_for_nonlinear_map(
+    nonlinear_posterior_setup: helpers.PosteriorSetup,
+) -> None:
+    """The Jacobian of the nonlinear map depends on the parameter, so a swapped argument order in
+    the calls to the forward map would be detected."""
+    log_posterior = _build_posterior(nonlinear_posterior_setup)
+    forward_map = nonlinear_posterior_setup.parameter_to_solution_map
+    parameter_vector = _random_parameter(4)
+    direction_vector = _random_parameter(5)
+    observation_matrix = nonlinear_posterior_setup.likelihood_setup.observation_matrix
+    precision_matrix = nonlinear_posterior_setup.likelihood_setup.precision_matrix
+    step = helpers.FINITE_DIFFERENCE_STEP
+    jacobian_direction = (
+        forward_map.evaluate_forward(parameter_vector + step * direction_vector)
+        - forward_map.evaluate_forward(parameter_vector - step * direction_vector)
+    ) / (2 * step)
+    jacobian_columns = np.stack(
+        [
+            (
+                forward_map.evaluate_forward(parameter_vector + step * unit)
+                - forward_map.evaluate_forward(parameter_vector - step * unit)
+            )
+            / (2 * step)
+            for unit in np.eye(helpers.PARAMETER_DIM)
+        ],
+        axis=1,
+    )
+
+    product = log_posterior.evaluate_gauss_newton_hessian_vector_product(
+        parameter_vector, direction_vector
+    )
+
+    expected = jacobian_columns.T @ (
+        observation_matrix.T @ precision_matrix @ (observation_matrix @ jacobian_direction)
+    )
+    np.testing.assert_allclose(product, expected, rtol=FINITE_DIFFERENCE_RELATIVE_TOLERANCE * 1e3)
+
+
+# --------------------------------------------------------------------------------------------------
+def test_posterior_gauss_newton_product_reuses_forward_solution(
+    posterior_setup: helpers.PosteriorSetup,
+) -> None:
+    log_posterior = _build_posterior(posterior_setup)
+    parameter_vector = _random_parameter(4)
+
+    log_posterior.evaluate_cost(parameter_vector)
+    for seed in range(3):
+        log_posterior.evaluate_gauss_newton_hessian_vector_product(
+            parameter_vector, _random_parameter(seed)
+        )
+
+    assert posterior_setup.parameter_to_solution_map.num_forward_evaluations == 1
+
+
+# --------------------------------------------------------------------------------------------------
 def test_posterior_gradient_matches_finite_difference_for_nonlinear_forward_map(
     nonlinear_posterior_setup: helpers.PosteriorSetup,
 ) -> None:

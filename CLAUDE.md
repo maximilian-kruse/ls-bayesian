@@ -26,8 +26,13 @@ test helpers) wire concrete pieces together.
 - `spde_prior/`: SPDE Gaussian priors on dolfinx; `SPDEPriorBuilder` + component strategies.
 - `posterior/`: `LogPosterior` = `Likelihood` + `ParameterToSolutionMap` + `GaussianPrior`
   (mirrors `SPDEPrior` API); caches forward/adjoint quantities.
+  `evaluate_gauss_newton_hessian_vector_product` gives `J^T (grad^2 Phi) J v` of the likelihood
+  part (the exact Hessian product stays unimplemented).
 - `optimization/`: `BaseOptimizer` (template over `_run_impl`) on `OptimizationModel`;
-  L-BFGS variants built from strategy components.
+  L-BFGS variants built from strategy components. `NewtonCGOptimizer` (`algorithms/newton_cg.py`)
+  is a truncated Newton method: `components/truncated_cg.py` solves `H p = -g` in the model's
+  inner product from `OptimizationModel.evaluate_hessian_vector_product` (a Riesz representer),
+  the forcing term is `min(0.5, sqrt(||g||))`, and any `LineSearchStrategy` globalizes it.
 - `mcmc/`: `Sampler` drives `MCMCAlgorithm`s (pCN, MALA, pMALA, PHMC); proposal
   reference measure (`measures.py`) is deliberately separate from `GaussianPrior`. `PHMCAlgorithm` is
   the infinity-mHMC of Beskos et al. (2017) with a fixed Gaussian `approximation` as mass matrix
